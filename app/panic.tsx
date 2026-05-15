@@ -1,200 +1,226 @@
-import { Text, View, Pressable, StyleSheet, Linking } from "react-native";
-import { useState, useEffect } from "react";
+import {
+  Text,
+  View,
+  Pressable,
+  StyleSheet,
+  Linking,
+  ActivityIndicator,
+  Animated,
+} from "react-native";
+import { useState, useEffect, useRef } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useKeepAwake } from "expo-keep-awake";
 import { ScreenContainer } from "@/components/screen-container";
 import { EMERGENCY_DATA, type DisasterType } from "@/constants/emergency-data";
 import { haptic } from "@/lib/haptics";
 import { speakInstruction, stopSpeech } from "@/lib/speech";
-
-const MODE_LABELS: Record<string, string> = {
-  fire: "🔥 FIRE MODE — ACTIVE",
-  injury: "🩸 INJURY MODE — ACTIVE",
-  quake: "🌪 EARTHQUAKE MODE — ACTIVE",
-  blackout: "⚡ BLACKOUT MODE — ACTIVE",
-  flood: "🌊 FLOOD MODE — ACTIVE",
-  toxic: "☣ TOXIC AIR MODE — ACTIVE",
-};
-
-const ALT_INSTRUCTIONS: Record<string, string[]> = {
-  fire: ["Breathe through shirt.", "Crawl to nearest exit.", "Stay away from windows."],
-  injury: ["Use any clean fabric.", "Keep arm elevated.", "Apply more pressure."],
-  blackout: ["Close gas valve.", "Use flashlight on phone.", "Go to hallway."],
-  quake: ["Get under table.", "Protect your head.", "Stay still, don't run."],
-  flood: ["Go upstairs now.", "Stay off the road.", "Signal for help."],
-  toxic: ["Use wet cloth as mask.", "Run against the wind.", "Stay in open air."],
-};
+import { analyzeEmergency } from "@/lib/ai-analysis";
+import { useAppContext } from "@/lib/app-context";
 
 export default function PanicScreen() {
+  useKeepAwake();
   const { type, training } = useLocalSearchParams<{ type: string; training?: string }>();
   const router = useRouter();
-  const disasterType = (type || "fire") as DisasterType;
-  const scenario = EMERGENCY_DATA[disasterType];
-  const steps = scenario?.steps || [];
-  const totalSteps = steps.length;
+  const { panicDetected, registerTap, animationsEnabled } = useAppContext();
 
-  const [currentStep, setCurrentStep] = useState(0);
-  const [showAlt, setShowAlt] = useState(false);
-  const [completed, setCompleted] = useState(false);
-
+  const disasterType = (type || "injury") as DisasterType;
+  const scenario = EMERGENCY_DATA[disasterType] || EMERGENCY_DATA.injury;
+  const steps = scenario.steps;
   const isTraining = training === "true";
 
+  const [currentStep, setCurrentStep] = useState(0);
+  const [completed, setCompleted] = useState(false);
+  const [altInstruction, setAltInstruction] = useState<string | null>(null);
+  const [loadingAlt, setLoadingAlt] = useState(false);
+
+  // Animated dot scale for active step
+  const dotAnims = useRef(steps.map(() => new Animated.Value(1))).current;
+
   useEffect(() => {
-    if (steps[currentStep] && !completed) {
-      speakInstruction(steps[currentStep].instruction);
+    if (!animationsEnabled || completed) return;
+    Animated.spring(dotAnims[currentStep], {
+      toValue: 1.4,
+      useNativeDriver: true,
+      damping: 10,
+    }).start();
+    return () => {
+      dotAnims[currentStep].setValue(1);
+    };
+  }, [currentStep, completed, animationsEnabled]);
+
+  // TTS: auto-read instruction on step change
+  useEffect(() => {
+    if (completed) {
+      speakInstruction("You did great. Stay calm. Help is on the way.", {
+        panicMode: panicDetected,
+      });
+      return;
     }
+    const text = altInstruction ?? steps[currentStep]?.instruction;
+    if (text) speakInstruction(text, { panicMode: panicDetected });
     return () => stopSpeech();
-  }, [currentStep, completed]);
+  }, [currentStep, altInstruction, completed, panicDetected]);
 
   const handleDone = () => {
+    registerTap();
     haptic.heavy();
-    if (currentStep < totalSteps - 1) {
+    setAltInstruction(null);
+    if (currentStep < steps.length - 1) {
       setCurrentStep((prev) => prev + 1);
-      setShowAlt(false);
     } else {
       setCompleted(true);
-      speakInstruction("All steps completed. Stay safe.");
     }
   };
 
-  const handleCantDoIt = () => {
+  const handleCantDo = async () => {
     haptic.medium();
-    setShowAlt(true);
-    const altText = ALT_INSTRUCTIONS[disasterType]?.[currentStep] || "Try another way.";
-    speakInstruction(altText);
+    setLoadingAlt(true);
+    const currentInstruction = altInstruction ?? steps[currentStep]?.instruction ?? "";
+    try {
+      const result = await analyzeEmergency(
+        `User cannot do: ${currentInstruction}. What is the alternative?`
+      );
+      setAltInstruction(result.firstInstruction);
+    } catch {
+      setAltInstruction(steps[currentStep]?.alternative ?? "Call 103 for guidance.");
+    } finally {
+      setLoadingAlt(false);
+    }
   };
 
-  const handleCall = () => {
-    Linking.openURL("tel:103");
-  };
+  const handleCall = () => Linking.openURL("tel:103");
+  const handleBack = () => { stopSpeech(); router.back(); };
 
-  const handleBack = () => {
-    stopSpeech();
-    router.back();
-  };
+  const fontSize = panicDetected ? 28 : 26;
 
+  // ── Completion screen ──────────────────────────────────────────────────────
   if (completed) {
     return (
-      <ScreenContainer containerClassName="bg-background">
-        <View style={styles.container}>
-          <View style={styles.completedContainer}>
-            <Text style={styles.completedEmoji}>✅</Text>
-            <Text style={styles.completedTitle}>ALL STEPS COMPLETED</Text>
-            <Text style={styles.completedSubtitle}>
-              {isTraining ? "Great practice! You're prepared." : "Stay calm. Help is available."}
+      <ScreenContainer
+        containerClassName="bg-background"
+        edges={["top", "left", "right", "bottom"]}
+      >
+        <View style={styles.completionContainer}>
+          <View style={styles.completionCard}>
+            <Text style={styles.completionEmoji}>✅</Text>
+            <Text style={styles.completionTitle}>You did great.</Text>
+            <Text style={styles.completionSubtitle}>Stay calm. Help is on the way.</Text>
+            <Text style={styles.completionHint}>
+              All {steps.length} steps completed for {scenario.title}
             </Text>
-            <Pressable
-              onPress={handleBack}
-              style={({ pressed }) => [
-                styles.backButton,
-                pressed && { opacity: 0.8 },
-              ]}
-            >
-              <Text style={styles.backButtonText}>← Back to Home</Text>
-            </Pressable>
           </View>
           <Pressable
             onPress={handleCall}
-            style={({ pressed }) => [
-              styles.callBar,
-              pressed && { opacity: 0.8 },
-            ]}
+            style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
           >
             <Text style={styles.callText}>📞 Call 103</Text>
+          </Pressable>
+          <Pressable
+            onPress={handleBack}
+            style={({ pressed }) => [styles.backBarBtn, pressed && { opacity: 0.7 }]}
+          >
+            <Text style={styles.backBarText}>← Back to Home</Text>
           </Pressable>
         </View>
       </ScreenContainer>
     );
   }
 
-  const currentInstruction = steps[currentStep];
-  const altInstruction = ALT_INSTRUCTIONS[disasterType]?.[currentStep];
-
+  // ── Step screen ────────────────────────────────────────────────────────────
   return (
-    <ScreenContainer containerClassName="bg-background" edges={["top", "left", "right", "bottom"]}>
+    <ScreenContainer
+      containerClassName="bg-background"
+      edges={["top", "left", "right", "bottom"]}
+    >
       <View style={styles.container}>
-        {/* Red Top Bar */}
-        <View style={[styles.topBar, isTraining && styles.topBarTraining]}>
-          <Pressable onPress={handleBack} style={styles.backArrow}>
-            <Text style={styles.backArrowText}>←</Text>
+        {/* Header */}
+        <View style={styles.header}>
+          <Pressable onPress={handleBack} style={styles.backBtn}>
+            <Text style={styles.backBtnText}>←</Text>
           </Pressable>
-          <Text style={styles.topBarText}>
-            {isTraining ? "🎯 TRAINING — " + MODE_LABELS[disasterType]?.split(" — ")[0] : MODE_LABELS[disasterType] || "EMERGENCY MODE"}
+          <View
+            style={[
+              styles.typeBadge,
+              {
+                backgroundColor: scenario.color + "30",
+                borderColor: scenario.color,
+              },
+            ]}
+          >
+            <Text style={[styles.typeBadgeText, { color: scenario.color }]}>
+              {isTraining ? "🎯 TRAINING" : scenario.title}
+            </Text>
+          </View>
+          <Text style={styles.stepCounter}>
+            {currentStep + 1} / {steps.length}
           </Text>
         </View>
 
-        {/* Progress Dots */}
-        <View style={styles.progressRow}>
+        {/* Progress dots */}
+        <View style={styles.dotsRow}>
           {steps.map((_, i) => (
-            <View
+            <Animated.View
               key={i}
               style={[
                 styles.dot,
-                i === currentStep && styles.dotActive,
-                i < currentStep && styles.dotCompleted,
+                i < currentStep
+                  ? styles.dotDone
+                  : i === currentStep
+                  ? styles.dotActive
+                  : styles.dotPending,
+                i === currentStep &&
+                  animationsEnabled && {
+                    transform: [{ scale: dotAnims[i] }],
+                  },
               ]}
             />
           ))}
-          <Text style={styles.stepLabel}>
-            Step {currentStep + 1} of {totalSteps}
-          </Text>
         </View>
 
-        {/* Main Instruction Area */}
-        <View style={styles.instructionArea}>
-          {/* Emoji Card */}
-          <View style={styles.emojiCard}>
-            <Text style={styles.emoji}>{currentInstruction.emoji}</Text>
-          </View>
-
-          {/* Instruction Text */}
-          <Text style={styles.instruction}>{currentInstruction.instruction}</Text>
-
-          {/* Alternative */}
-          {showAlt && altInstruction && (
-            <View style={styles.altContainer}>
-              <Text style={styles.altLabel}>Alternative:</Text>
-              <Text style={styles.altText}>{altInstruction}</Text>
+        {/* Step card */}
+        <View style={styles.stepCard}>
+          <Text style={styles.stepEmoji}>{steps[currentStep]?.emoji}</Text>
+          <Text style={[styles.stepInstruction, { fontSize, lineHeight: fontSize * 1.35 }]}>
+            {altInstruction ?? steps[currentStep]?.instruction}
+          </Text>
+          {altInstruction && (
+            <View style={styles.altBadge}>
+              <Text style={styles.altBadgeText}>🔄 Alternative instruction</Text>
             </View>
           )}
         </View>
 
-        {/* Action Buttons */}
-        <View style={styles.actions}>
-          {/* DONE Button */}
-          <Pressable
-            onPress={handleDone}
-            style={({ pressed }) => [
-              styles.doneButton,
-              pressed && { transform: [{ scale: 0.97 }], opacity: 0.9 },
-            ]}
-          >
-            <Text style={styles.doneText}>DONE ✓</Text>
-          </Pressable>
+        {/* DONE */}
+        <Pressable
+          onPress={handleDone}
+          style={({ pressed }) => [
+            styles.doneBtn,
+            pressed && { transform: [{ scale: 0.97 }], opacity: 0.9 },
+            panicDetected && styles.doneBtnLarge,
+          ]}
+        >
+          <Text style={[styles.doneBtnText, panicDetected && { fontSize: 22 }]}>
+            ✓ DONE
+          </Text>
+        </Pressable>
 
-          {/* Can't do it */}
-          <Pressable
-            onPress={handleCantDoIt}
-            style={({ pressed }) => [
-              styles.cantButton,
-              pressed && { opacity: 0.7 },
-            ]}
-          >
-            <Text style={styles.cantText}>Can't do it — show alternative</Text>
-          </Pressable>
-        </View>
+        {/* Can't do it */}
+        <Pressable
+          onPress={handleCantDo}
+          disabled={loadingAlt}
+          style={({ pressed }) => [styles.cantBtn, pressed && { opacity: 0.7 }]}
+        >
+          {loadingAlt ? (
+            <ActivityIndicator size="small" color="#4a9d9c" />
+          ) : (
+            <Text style={styles.cantBtnText}>❓ Can't do it — show alternative</Text>
+          )}
+        </Pressable>
 
-        {/* AI Listening Bar */}
-        <View style={styles.aiBar}>
-          <Text style={styles.aiBarText}>🤖 AI listening… speak your status</Text>
-        </View>
-
-        {/* Call Bar */}
+        {/* Call 103 */}
         <Pressable
           onPress={handleCall}
-          style={({ pressed }) => [
-            styles.callBar,
-            pressed && { opacity: 0.8 },
-          ]}
+          style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
         >
           <Text style={styles.callText}>📞 Call 103</Text>
         </Pressable>
@@ -204,191 +230,115 @@ export default function PanicScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-  },
-  topBar: {
-    backgroundColor: "#FF3D3D",
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    marginBottom: 12,
+  container: { flex: 1, paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12 },
+  header: {
     flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
-  },
-  topBarTraining: {
-    backgroundColor: "#0D6E6E",
-  },
-  backArrow: {
-    marginRight: 10,
-  },
-  backArrowText: {
-    fontSize: 20,
-    color: "#FFFFFF",
-    fontWeight: "700",
-  },
-  topBarText: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: "#FFFFFF",
-    letterSpacing: 1,
-    flex: 1,
-  },
-  progressRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
     marginBottom: 16,
-    paddingHorizontal: 4,
   },
-  dot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: "#354656",
+  backBtn: { paddingVertical: 4, paddingRight: 8 },
+  backBtnText: { fontSize: 22, color: "#4a9d9c", fontWeight: "700" },
+  typeBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 10,
+    borderWidth: 1,
   },
-  dotActive: {
-    backgroundColor: "#FF3D3D",
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-  },
-  dotCompleted: {
-    backgroundColor: "#22C55E",
-  },
-  stepLabel: {
-    fontSize: 12,
-    color: "#e0e0e0",
-    marginLeft: "auto",
-    fontWeight: "600",
-  },
-  instructionArea: {
-    flex: 1,
+  typeBadgeText: { fontSize: 13, fontWeight: "700" },
+  stepCounter: { fontSize: 14, color: "#e0e0e0", fontWeight: "600" },
+  dotsRow: {
+    flexDirection: "row",
     justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 10,
+    gap: 10,
+    marginBottom: 20,
   },
-  emojiCard: {
+  dot: { width: 12, height: 12, borderRadius: 6 },
+  dotDone: { backgroundColor: "#22C55E" },
+  dotActive: { backgroundColor: "#FF3D3D" },
+  dotPending: { backgroundColor: "#354656" },
+  stepCard: {
+    flex: 1,
     backgroundColor: "#1d2e3d",
     borderRadius: 20,
-    width: 120,
-    height: 120,
-    justifyContent: "center",
+    padding: 28,
     alignItems: "center",
-    marginBottom: 24,
-    borderWidth: 2,
+    justifyContent: "center",
+    borderWidth: 1,
     borderColor: "#354656",
+    marginBottom: 16,
   },
-  emoji: {
-    fontSize: 56,
-  },
-  instruction: {
-    fontSize: 26,
-    fontWeight: "800",
-    color: "#FFFFFF",
-    textAlign: "center",
-    lineHeight: 34,
-  },
-  altContainer: {
-    marginTop: 16,
-    backgroundColor: "#1d2e3d",
-    borderRadius: 10,
-    padding: 12,
+  stepEmoji: { fontSize: 72, marginBottom: 20 },
+  stepInstruction: { fontWeight: "800", color: "#FFFFFF", textAlign: "center" },
+  altBadge: {
+    marginTop: 14,
+    backgroundColor: "#4a9d9c30",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
     borderWidth: 1,
     borderColor: "#4a9d9c",
   },
-  altLabel: {
-    fontSize: 11,
-    color: "#4a9d9c",
-    fontWeight: "700",
-    marginBottom: 4,
-  },
-  altText: {
-    fontSize: 16,
-    color: "#FFFFFF",
-    fontWeight: "600",
-  },
-  actions: {
-    gap: 10,
-    marginBottom: 10,
-  },
-  doneButton: {
-    backgroundColor: "#FF3D3D",
+  altBadgeText: { fontSize: 12, color: "#4a9d9c", fontWeight: "600" },
+  doneBtn: {
+    backgroundColor: "#22C55E",
     borderRadius: 14,
     paddingVertical: 18,
     alignItems: "center",
+    marginBottom: 10,
   },
-  doneText: {
-    fontSize: 20,
-    fontWeight: "900",
-    color: "#FFFFFF",
-    letterSpacing: 1,
-  },
-  cantButton: {
-    backgroundColor: "#354656",
+  doneBtnLarge: { paddingVertical: 22 },
+  doneBtnText: { fontSize: 18, fontWeight: "900", color: "#FFFFFF", letterSpacing: 2 },
+  cantBtn: {
+    backgroundColor: "#1d2e3d",
     borderRadius: 10,
     paddingVertical: 12,
     alignItems: "center",
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#354656",
   },
-  cantText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#e0e0e0",
-  },
-  aiBar: {
-    backgroundColor: "#0D6E6E",
-    borderRadius: 8,
-    paddingVertical: 8,
-    alignItems: "center",
-    marginBottom: 8,
-  },
-  aiBarText: {
-    fontSize: 13,
-    color: "#afffff",
-    fontWeight: "600",
-  },
+  cantBtnText: { fontSize: 14, color: "#4a9d9c", fontWeight: "600" },
   callBar: {
-    backgroundColor: "#22C55E",
+    backgroundColor: "#FF3D3D",
     borderRadius: 10,
-    paddingVertical: 12,
+    paddingVertical: 14,
     alignItems: "center",
   },
-  callText: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#FFFFFF",
-  },
-  completedContainer: {
+  callText: { fontSize: 16, fontWeight: "700", color: "#FFFFFF" },
+  // Completion
+  completionContainer: {
     flex: 1,
-    justifyContent: "center",
+    paddingHorizontal: 20,
+    paddingTop: 40,
+    paddingBottom: 20,
+  },
+  completionCard: {
+    flex: 1,
+    backgroundColor: "#22C55E20",
+    borderRadius: 24,
+    padding: 32,
     alignItems: "center",
-    gap: 12,
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#22C55E",
+    marginBottom: 20,
   },
-  completedEmoji: {
-    fontSize: 64,
-  },
-  completedTitle: {
-    fontSize: 24,
+  completionEmoji: { fontSize: 80, marginBottom: 20 },
+  completionTitle: {
+    fontSize: 32,
     fontWeight: "900",
     color: "#22C55E",
+    marginBottom: 10,
   },
-  completedSubtitle: {
-    fontSize: 15,
-    color: "#e0e0e0",
-    textAlign: "center",
-  },
-  backButton: {
-    backgroundColor: "#0D6E6E",
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    marginTop: 12,
-  },
-  backButtonText: {
-    fontSize: 15,
-    fontWeight: "700",
+  completionSubtitle: {
+    fontSize: 20,
     color: "#FFFFFF",
+    fontWeight: "600",
+    textAlign: "center",
+    marginBottom: 14,
   },
+  completionHint: { fontSize: 14, color: "#e0e0e0", textAlign: "center" },
+  backBarBtn: { paddingVertical: 12, alignItems: "center", marginTop: 8 },
+  backBarText: { fontSize: 14, color: "#4a9d9c", fontWeight: "600" },
 });

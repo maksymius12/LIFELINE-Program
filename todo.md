@@ -1,5 +1,7 @@
 # Project TODO
 
+## Initial Build (v1.0)
+
 - [x] Configure theme colors (brand palette) in theme.config.js and tailwind.config.js
 - [x] Set up tab navigation (Emergency / Training / My Kit / Settings)
 - [x] Add icon mappings for all tabs
@@ -14,20 +16,54 @@
 - [x] Add "Call 103" persistent button on all screens
 - [x] Generate custom app logo
 - [x] Update app.config.ts with branding
-- [x] Final testing and checkpoint
 
-## Voice AI SOS Update
+## Voice AI SOS Update (v1.1)
 
-- [x] Install expo-av, expo-sms, expo-location, expo-keep-awake dependencies
+- [x] Install expo-sms, expo-location, expo-keep-awake dependencies
 - [x] Update app.config.ts with microphone, location, SMS permissions
 - [x] Create AI analysis service (Gemma local API + keyword fallback)
 - [x] Create family SMS service with GPS location
 - [x] Create AsyncStorage family contact hook
 - [x] Build SOS screen with idle/listening/processing/response states
-- [x] Integrate voice recording via expo-av
+- [x] Integrate voice recording via expo-audio
 - [x] Integrate speech transcription (manus-speech-to-text as bridge)
 - [x] Auto-navigate to Panic Mode after AI response
 - [x] Update Settings screen with family contact input + test SMS button
 - [x] Show emergency contact on Home screen
 - [x] Add expo-keep-awake to SOS flow
 - [x] Test all states and error handling
+
+## Full Functionality Update (v1.2)
+
+- [x] Install expo-battery, expo-sensors
+- [x] Permissions flow on first launch (mic + location)
+- [x] SOS: TTS reads spokenResponse immediately and loudly
+- [x] SOS: haptics.notificationAsync(Error) on critical severity
+- [x] SOS: auto-navigate to panic/[type] after response
+- [x] SOS: pulsing ring animation on home SOS button
+- [x] SOS: animated sound-wave bars during listening state
+- [x] SOS: rotating spinner during processing state
+- [x] Panic Mode: TTS auto-reads instruction on mount
+- [x] Panic Mode: DONE button with Heavy haptic
+- [x] Panic Mode: animated progress dots
+- [x] Panic Mode: completion screen (green, "You did great")
+- [x] Panic Mode: "Can't do it" → Gemma alternative or hardcoded fallback
+- [x] Panic Mode: keep-awake active
+- [x] Medical AI: full YES/NO decision tree (5 diagnoses)
+- [x] Medical AI: protocol steps one at a time with TTS
+- [x] Medical AI: countdown timer for timed steps
+- [x] Medical AI: keep-awake active
+- [x] Training Mode: interactive scenario session screen
+- [x] Training Mode: voice answer + Gemma evaluation
+- [x] Training Mode: streak counter in AsyncStorage
+- [x] SMS: correct AsyncStorage key (lifeline_family_number)
+- [x] SMS: sendFamilySMS alias for Settings screen
+- [x] Speech: respect ttsEnabled setting from AsyncStorage
+- [x] Home: blackout mode (pure black UI), battery badge, panic banner
+- [x] Home: yellow warning if no emergency contact set
+- [x] Battery awareness: disable animations < 20%, blackout mode < 15%
+- [x] Panic Detector: accelerometer shake + rapid tap detection
+- [x] Blackout Mode: pure black/white UI, voice-first
+- [x] Keep-awake on all emergency screens (SOS, Panic, Medical)
+- [x] TypeScript check passes (0 errors)
+- [x] All 22 tests pass

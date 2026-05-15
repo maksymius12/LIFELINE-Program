@@ -1,51 +1,64 @@
 import * as SMS from "expo-sms";
 import * as Location from "expo-location";
-import { Platform } from "react-native";
+import { Linking, Platform } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
-export const sendFamilySMS = async (familyNumber: string): Promise<boolean> => {
+const FAMILY_NUMBER_KEY = "lifeline_family_number";
+
+export const sendEmergencySMS = async (): Promise<boolean> => {
+  if (Platform.OS === "web") return false;
+
+  const isAvailable = await SMS.isAvailableAsync();
+  if (!isAvailable) return false;
+
+  const familyNumber = await AsyncStorage.getItem(FAMILY_NUMBER_KEY);
   if (!familyNumber) return false;
 
+  let locationText = "Location unavailable";
   try {
-    const isAvailable = await SMS.isAvailableAsync();
-    if (!isAvailable) return false;
-
-    let messageBody = "🆘 LIFELINE ALERT: I need help. Please call me or emergency services.";
-
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status === "granted") {
-        const location = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-        const { latitude, longitude } = location.coords;
-        const mapsLink = `https://maps.google.com/?q=${latitude},${longitude}`;
-        messageBody = `🆘 LIFELINE ALERT: I need help. My location: ${mapsLink}`;
-      }
-    } catch {
-      // GPS unavailable — send without location
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status === "granted") {
+      const loc = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+      locationText = `https://maps.google.com/?q=${loc.coords.latitude},${loc.coords.longitude}`;
     }
-
-    const { result } = await SMS.sendSMSAsync([familyNumber], messageBody);
-    return result === "sent" || result === "unknown";
   } catch {
-    return false;
+    // GPS unavailable — send without location
   }
+
+  await SMS.sendSMSAsync(
+    [familyNumber],
+    `🆘 LIFELINE ALERT\nI need help. My location: ${locationText}\nSent automatically by LIFELINE app.`
+  );
+  return true;
+};
+
+export const sendTestSMS = async (familyNumber: string): Promise<boolean> => {
+  if (Platform.OS === "web") return false;
+  const isAvailable = await SMS.isAvailableAsync();
+  if (!isAvailable) return false;
+  await SMS.sendSMSAsync(
+    [familyNumber],
+    "LIFELINE test message. You are set as emergency contact."
+  );
+  return true;
 };
 
 export const openNearestHospital = async () => {
   try {
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status === "granted") {
-      const location = await Location.getCurrentPositionAsync({});
-      const { latitude, longitude } = location.coords;
-      const url = `https://maps.google.com/?q=hospital+near+me&center=${latitude},${longitude}`;
-      const { Linking } = require("react-native");
+      const loc = await Location.getCurrentPositionAsync({});
+      const url = `https://maps.google.com/?q=hospital+near+me&center=${loc.coords.latitude},${loc.coords.longitude}`;
       await Linking.openURL(url);
     } else {
-      const { Linking } = require("react-native");
       await Linking.openURL("https://maps.google.com/?q=hospital+near+me");
     }
   } catch {
     // Silently fail
   }
 };
+
+// Alias for Settings screen
+export const sendFamilySMS = sendTestSMS;

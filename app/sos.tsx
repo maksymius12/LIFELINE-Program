@@ -4,7 +4,6 @@ import {
   Pressable,
   StyleSheet,
   Linking,
-  ActivityIndicator,
   Animated,
   Platform,
 } from "react-native";
@@ -22,46 +21,47 @@ import { ScreenContainer } from "@/components/screen-container";
 import { haptic } from "@/lib/haptics";
 import { speakInstruction, stopSpeech } from "@/lib/speech";
 import { analyzeEmergency } from "@/lib/ai-analysis";
-import { sendFamilySMS, openNearestHospital } from "@/lib/family-sms";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { sendEmergencySMS } from "@/lib/family-sms";
+import { useAppContext } from "@/lib/app-context";
 
 type SOSState = "idle" | "listening" | "processing" | "response";
 
 export default function SOSScreen() {
   useKeepAwake();
   const router = useRouter();
+  const { panicDetected, registerTap, animationsEnabled } = useAppContext();
 
   const [sosState, setSosState] = useState<SOSState>("idle");
   const [statusText, setStatusText] = useState("Press and speak");
   const [errorText, setErrorText] = useState<string | null>(null);
-  const [familyNumber, setFamilyNumber] = useState("");
 
+  // Animations
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const pulseLoop = useRef<Animated.CompositeAnimation | null>(null);
+  const spinAnim = useRef(new Animated.Value(0)).current;
+  const spinLoop = useRef<Animated.CompositeAnimation | null>(null);
+  const waveAnims = useRef(
+    Array.from({ length: 5 }, () => new Animated.Value(0.3))
+  ).current;
+  const waveLoop = useRef<Animated.CompositeAnimation | null>(null);
 
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
 
-  // Load family number from storage
+  // Pulse animation for idle state
   useEffect(() => {
-    AsyncStorage.getItem("lifeline_family_number").then((val) => {
-      if (val) setFamilyNumber(val);
-    });
-  }, []);
-
-  // Pulse animation for SOS circle
-  useEffect(() => {
-    if (sosState === "idle" || sosState === "listening") {
+    if (!animationsEnabled) return;
+    if (sosState === "idle") {
       pulseLoop.current = Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, {
             toValue: 1.12,
-            duration: 700,
+            duration: 900,
             useNativeDriver: true,
           }),
           Animated.timing(pulseAnim, {
             toValue: 1,
-            duration: 700,
+            duration: 900,
             useNativeDriver: true,
           }),
         ])
@@ -72,9 +72,61 @@ export default function SOSScreen() {
       pulseAnim.setValue(1);
     }
     return () => pulseLoop.current?.stop();
-  }, [sosState]);
+  }, [sosState, animationsEnabled]);
 
-  // Request microphone permission on mount
+  // Wave animation for listening state
+  useEffect(() => {
+    if (sosState === "listening" && animationsEnabled) {
+      waveLoop.current = Animated.loop(
+        Animated.parallel(
+          waveAnims.map((anim, i) =>
+            Animated.sequence([
+              Animated.delay(i * 80),
+              Animated.loop(
+                Animated.sequence([
+                  Animated.timing(anim, {
+                    toValue: 0.3 + Math.random() * 0.7,
+                    duration: 200 + Math.random() * 200,
+                    useNativeDriver: true,
+                  }),
+                  Animated.timing(anim, {
+                    toValue: 0.3,
+                    duration: 200 + Math.random() * 200,
+                    useNativeDriver: true,
+                  }),
+                ])
+              ),
+            ])
+          )
+        )
+      );
+      waveLoop.current.start();
+    } else {
+      waveLoop.current?.stop();
+      waveAnims.forEach((a) => a.setValue(0.3));
+    }
+    return () => waveLoop.current?.stop();
+  }, [sosState, animationsEnabled]);
+
+  // Spin animation for processing state
+  useEffect(() => {
+    if (sosState === "processing" && animationsEnabled) {
+      spinLoop.current = Animated.loop(
+        Animated.timing(spinAnim, {
+          toValue: 1,
+          duration: 1000,
+          useNativeDriver: true,
+        })
+      );
+      spinLoop.current.start();
+    } else {
+      spinLoop.current?.stop();
+      spinAnim.setValue(0);
+    }
+    return () => spinLoop.current?.stop();
+  }, [sosState, animationsEnabled]);
+
+  // Request mic permission on mount
   useEffect(() => {
     (async () => {
       const { granted } = await requestRecordingPermissionsAsync();
@@ -86,6 +138,7 @@ export default function SOSScreen() {
   }, []);
 
   const handleSOSPress = async () => {
+    registerTap();
     if (sosState === "idle") {
       await startListening();
     } else if (sosState === "listening") {
@@ -98,8 +151,7 @@ export default function SOSScreen() {
     setSosState("listening");
     setStatusText("Listening… tell me what happened");
     setErrorText(null);
-    speakInstruction("Tell me what happened");
-
+    speakInstruction("Tell me what happened", { panicMode: panicDetected });
     try {
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record();
@@ -115,28 +167,21 @@ export default function SOSScreen() {
     setSosState("processing");
     setStatusText("AI is understanding your situation…");
     stopSpeech();
-
     try {
       await audioRecorder.stop();
       const uri = audioRecorder.uri;
-
-      let transcript = "";
+      let transcript = "emergency help needed";
       if (uri && Platform.OS !== "web") {
-        // Use manus-speech-to-text for transcription
         try {
           const { exec } = require("child_process");
           const { promisify } = require("util");
           const execAsync = promisify(exec);
           const { stdout } = await execAsync(`manus-speech-to-text "${uri}"`);
-          transcript = stdout.trim();
+          transcript = stdout.trim() || transcript;
         } catch {
-          // Transcription failed — use a generic emergency phrase
-          transcript = "emergency help needed";
+          // Transcription failed — use generic phrase
         }
-      } else {
-        transcript = "emergency help needed";
       }
-
       await processTranscript(transcript);
     } catch {
       setErrorText("Recording failed. Using manual mode.");
@@ -151,41 +196,39 @@ export default function SOSScreen() {
 
       setSosState("response");
       setStatusText(result.spokenResponse);
-      haptic.heavy();
-      speakInstruction(result.spokenResponse);
 
-      // Execute all 4 actions simultaneously
-      const actions: Promise<void>[] = [];
+      // A) TTS reads spokenResponse immediately and loudly
+      speakInstruction(result.spokenResponse, { panicMode: panicDetected });
 
-      // 1. SMS to family
-      if (result.shouldSMSFamily && familyNumber) {
-        actions.push(sendFamilySMS(familyNumber).then(() => {}));
+      // C) Heavy haptic for critical severity
+      if (result.severity === "critical") {
+        haptic.error();
+      } else {
+        haptic.success();
       }
 
-      // 2. Show nearest hospital
-      if (result.nearestHelp) {
-        actions.push(openNearestHospital());
+      // Execute D, E simultaneously
+      const actions: Promise<unknown>[] = [];
+
+      // D) SMS to family with GPS
+      if (result.shouldSMSFamily) {
+        actions.push(sendEmergencySMS());
       }
 
-      // 3. Call 103 if critical
+      // E) Call 103
       if (result.shouldCall103) {
         actions.push(Linking.openURL("tel:103"));
       }
 
       await Promise.allSettled(actions);
 
-      // 4. Navigate to Panic Mode
-      if (result.emergencyType !== "unknown") {
-        setTimeout(() => {
-          stopSpeech();
-          router.push(`/panic?type=${result.emergencyType}`);
-        }, 2500);
-      } else {
-        setTimeout(() => {
-          setSosState("idle");
-          setStatusText("Press and speak");
-        }, 3000);
-      }
+      // B) Navigate to correct panic screen
+      const targetType =
+        result.emergencyType !== "unknown" ? result.emergencyType : "injury";
+      setTimeout(() => {
+        stopSpeech();
+        router.push(`/panic?type=${targetType}`);
+      }, 2500);
     } catch {
       setErrorText("AI analysis failed. Please select emergency type manually.");
       setSosState("idle");
@@ -203,44 +246,28 @@ export default function SOSScreen() {
     router.back();
   };
 
-  const getCircleColor = () => {
-    switch (sosState) {
-      case "listening":
-        return "#4a9d9c";
-      case "processing":
-        return "#354656";
-      case "response":
-        return "#22C55E";
-      default:
-        return "#FF3D3D";
-    }
-  };
+  const circleColor =
+    sosState === "listening"
+      ? "#4a9d9c"
+      : sosState === "processing"
+      ? "#FF3D3D"
+      : sosState === "response"
+      ? "#22C55E"
+      : "#FF3D3D";
 
-  const getCircleContent = () => {
-    if (sosState === "processing") {
-      return <ActivityIndicator size="large" color="#FFFFFF" />;
-    }
-    if (sosState === "listening") {
-      return (
-        <>
-          <Text style={styles.sosIcon}>🎙</Text>
-          <Text style={styles.sosSubLabel}>TAP TO STOP</Text>
-        </>
-      );
-    }
-    if (sosState === "response") {
-      return <Text style={styles.sosIcon}>✅</Text>;
-    }
-    return (
-      <>
-        <Text style={styles.sosLabel}>SOS</Text>
-        <Text style={styles.sosSubLabel}>PRESS & SPEAK</Text>
-      </>
-    );
-  };
+  const spinInterpolate = spinAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["0deg", "360deg"],
+  });
+
+  const fontSize = panicDetected ? 24 : 20;
+  const btnScale = panicDetected ? 1.2 : 1;
 
   return (
-    <ScreenContainer containerClassName="bg-background" edges={["top", "left", "right", "bottom"]}>
+    <ScreenContainer
+      containerClassName="bg-background"
+      edges={["top", "left", "right", "bottom"]}
+    >
       <View style={styles.container}>
         {/* Header */}
         <View style={styles.header}>
@@ -257,75 +284,114 @@ export default function SOSScreen() {
 
         {/* Main SOS Circle */}
         <View style={styles.circleContainer}>
-          <Animated.View
-            style={[
-              styles.pulseRing,
-              {
-                backgroundColor: getCircleColor() + "30",
-                transform: [{ scale: pulseAnim }],
-              },
-            ]}
-          />
+          {/* Pulse ring (idle) */}
+          {sosState === "idle" && animationsEnabled && (
+            <Animated.View
+              style={[
+                styles.pulseRing,
+                {
+                  backgroundColor: circleColor + "30",
+                  transform: [{ scale: pulseAnim }],
+                },
+              ]}
+            />
+          )}
+
+          {/* Spin ring (processing) */}
+          {sosState === "processing" && animationsEnabled && (
+            <Animated.View
+              style={[
+                styles.spinRing,
+                { transform: [{ rotate: spinInterpolate }] },
+              ]}
+            />
+          )}
+
           <Pressable
             onPress={handleSOSPress}
             disabled={sosState === "processing" || sosState === "response"}
             style={[
               styles.sosCircle,
-              { backgroundColor: getCircleColor() },
-              (sosState === "processing" || sosState === "response") && styles.sosCircleDisabled,
+              { backgroundColor: circleColor, transform: [{ scale: btnScale }] },
             ]}
           >
-            {getCircleContent()}
+            {sosState === "listening" ? (
+              <View style={styles.waveContainer}>
+                {waveAnims.map((anim, i) => (
+                  <Animated.View
+                    key={i}
+                    style={[
+                      styles.waveBar,
+                      { transform: [{ scaleY: anim }] },
+                    ]}
+                  />
+                ))}
+              </View>
+            ) : sosState === "processing" ? (
+              <Text style={styles.sosIcon}>⏳</Text>
+            ) : sosState === "response" ? (
+              <Text style={styles.sosIcon}>✅</Text>
+            ) : (
+              <>
+                <Text style={styles.sosLabel}>SOS</Text>
+                <Text style={styles.sosSubLabel}>PRESS & SPEAK</Text>
+              </>
+            )}
           </Pressable>
         </View>
 
         {/* Status Text */}
-        <Text style={styles.statusText}>{statusText}</Text>
+        <Text style={[styles.statusText, { fontSize }]}>{statusText}</Text>
 
-        {/* Error Text */}
+        {/* Error */}
         {errorText && (
           <View style={styles.errorContainer}>
             <Text style={styles.errorText}>⚠ {errorText}</Text>
           </View>
         )}
 
-        {/* State-specific info */}
-        {sosState === "idle" && (
+        {/* Panic detected banner */}
+        {panicDetected && (
+          <View style={styles.panicBanner}>
+            <Text style={styles.panicText}>
+              🫁 Panic detected — UI enlarged. Breathe slowly.
+            </Text>
+          </View>
+        )}
+
+        {/* State info cards */}
+        {sosState === "idle" && !panicDetected && (
           <View style={styles.infoCard}>
             <Text style={styles.infoText}>
               Press the SOS button and describe your emergency. AI will analyze and guide you.
             </Text>
           </View>
         )}
-
         {sosState === "listening" && (
           <View style={styles.listeningCard}>
             <Text style={styles.listeningText}>🎙 Recording your voice…</Text>
             <Text style={styles.listeningHint}>Tap the circle again when done speaking</Text>
           </View>
         )}
-
         {sosState === "processing" && (
           <View style={styles.processingCard}>
             <Text style={styles.processingText}>🤖 Analyzing emergency situation…</Text>
             <Text style={styles.processingHint}>Identifying type • Severity • Actions</Text>
           </View>
         )}
-
         {sosState === "response" && (
           <View style={styles.responseCard}>
             <Text style={styles.responseTitle}>AI Response Ready</Text>
-            <Text style={styles.responseText}>{statusText}</Text>
             <Text style={styles.responseHint}>Navigating to emergency guide…</Text>
           </View>
         )}
 
-        {/* AI Listening Bar */}
+        {/* AI bar */}
         <View style={styles.aiBar}>
-          <Text style={styles.aiBarText}>🤖 AI listening… speak your status</Text>
+          <Text style={styles.aiBarText}>🤖 Gemma AI • Offline capable</Text>
         </View>
 
-        {/* Call Bar — always visible */}
+        {/* Call 103 */}
         <Pressable
           onPress={handleCall}
           style={({ pressed }) => [
@@ -353,15 +419,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 8,
   },
-  backBtn: {
-    paddingVertical: 4,
-    paddingRight: 8,
-  },
-  backBtnText: {
-    fontSize: 15,
-    color: "#4a9d9c",
-    fontWeight: "600",
-  },
+  backBtn: { paddingVertical: 4, paddingRight: 8 },
+  backBtnText: { fontSize: 15, color: "#4a9d9c", fontWeight: "600" },
   title: {
     fontSize: 22,
     fontWeight: "800",
@@ -374,22 +433,27 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 12,
   },
-  badgeText: {
-    color: "#afffff",
-    fontSize: 11,
-    fontWeight: "700",
-  },
+  badgeText: { color: "#afffff", fontSize: 11, fontWeight: "700" },
   circleContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    minHeight: 220,
+    minHeight: 200,
   },
   pulseRing: {
     position: "absolute",
     width: 200,
     height: 200,
     borderRadius: 100,
+  },
+  spinRing: {
+    position: "absolute",
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    borderWidth: 3,
+    borderColor: "#FF3D3D",
+    borderTopColor: "transparent",
   },
   sosCircle: {
     width: 160,
@@ -403,18 +467,13 @@ const styles = StyleSheet.create({
     shadowRadius: 24,
     elevation: 12,
   },
-  sosCircleDisabled: {
-    shadowOpacity: 0.2,
-  },
   sosLabel: {
     fontSize: 38,
     fontWeight: "900",
     color: "#FFFFFF",
     letterSpacing: 3,
   },
-  sosIcon: {
-    fontSize: 48,
-  },
+  sosIcon: { fontSize: 48 },
   sosSubLabel: {
     fontSize: 10,
     fontWeight: "700",
@@ -422,13 +481,24 @@ const styles = StyleSheet.create({
     marginTop: 4,
     opacity: 0.9,
   },
+  waveContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    height: 60,
+  },
+  waveBar: {
+    width: 6,
+    height: 50,
+    backgroundColor: "#afffff",
+    borderRadius: 3,
+  },
   statusText: {
-    fontSize: 20,
     fontWeight: "700",
     color: "#FFFFFF",
     textAlign: "center",
     marginBottom: 12,
-    lineHeight: 28,
+    lineHeight: 30,
     paddingHorizontal: 10,
   },
   errorContainer: {
@@ -439,12 +509,16 @@ const styles = StyleSheet.create({
     borderColor: "#FF3D3D",
     marginBottom: 10,
   },
-  errorText: {
-    fontSize: 13,
-    color: "#FF3D3D",
-    textAlign: "center",
-    fontWeight: "600",
+  errorText: { fontSize: 13, color: "#FF3D3D", textAlign: "center", fontWeight: "600" },
+  panicBanner: {
+    backgroundColor: "#FF3D3D20",
+    borderRadius: 10,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: "#FF3D3D",
+    marginBottom: 10,
   },
+  panicText: { fontSize: 13, color: "#FF3D3D", textAlign: "center", fontWeight: "600" },
   infoCard: {
     backgroundColor: "#1d2e3d",
     borderRadius: 12,
@@ -453,12 +527,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#354656",
   },
-  infoText: {
-    fontSize: 14,
-    color: "#e0e0e0",
-    textAlign: "center",
-    lineHeight: 20,
-  },
+  infoText: { fontSize: 14, color: "#e0e0e0", textAlign: "center", lineHeight: 20 },
   listeningCard: {
     backgroundColor: "#0D6E6E30",
     borderRadius: 12,
@@ -468,16 +537,8 @@ const styles = StyleSheet.create({
     borderColor: "#0D6E6E",
     alignItems: "center",
   },
-  listeningText: {
-    fontSize: 16,
-    color: "#afffff",
-    fontWeight: "700",
-    marginBottom: 4,
-  },
-  listeningHint: {
-    fontSize: 12,
-    color: "#e0e0e0",
-  },
+  listeningText: { fontSize: 16, color: "#afffff", fontWeight: "700", marginBottom: 4 },
+  listeningHint: { fontSize: 12, color: "#e0e0e0" },
   processingCard: {
     backgroundColor: "#1d2e3d",
     borderRadius: 12,
@@ -487,16 +548,8 @@ const styles = StyleSheet.create({
     borderColor: "#354656",
     alignItems: "center",
   },
-  processingText: {
-    fontSize: 15,
-    color: "#FFFFFF",
-    fontWeight: "700",
-    marginBottom: 4,
-  },
-  processingHint: {
-    fontSize: 12,
-    color: "#4a9d9c",
-  },
+  processingText: { fontSize: 15, color: "#FFFFFF", fontWeight: "700", marginBottom: 4 },
+  processingHint: { fontSize: 12, color: "#4a9d9c" },
   responseCard: {
     backgroundColor: "#22C55E20",
     borderRadius: 12,
@@ -506,23 +559,8 @@ const styles = StyleSheet.create({
     borderColor: "#22C55E",
     alignItems: "center",
   },
-  responseTitle: {
-    fontSize: 14,
-    color: "#22C55E",
-    fontWeight: "700",
-    marginBottom: 4,
-  },
-  responseText: {
-    fontSize: 16,
-    color: "#FFFFFF",
-    fontWeight: "600",
-    textAlign: "center",
-    marginBottom: 4,
-  },
-  responseHint: {
-    fontSize: 12,
-    color: "#e0e0e0",
-  },
+  responseTitle: { fontSize: 14, color: "#22C55E", fontWeight: "700", marginBottom: 4 },
+  responseHint: { fontSize: 12, color: "#e0e0e0" },
   aiBar: {
     backgroundColor: "#0D6E6E",
     borderRadius: 8,
@@ -530,20 +568,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 8,
   },
-  aiBarText: {
-    fontSize: 13,
-    color: "#afffff",
-    fontWeight: "600",
-  },
+  aiBarText: { fontSize: 13, color: "#afffff", fontWeight: "600" },
   callBar: {
     backgroundColor: "#22C55E",
     borderRadius: 10,
     paddingVertical: 14,
     alignItems: "center",
   },
-  callText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#FFFFFF",
-  },
+  callText: { fontSize: 16, fontWeight: "700", color: "#FFFFFF" },
 });
