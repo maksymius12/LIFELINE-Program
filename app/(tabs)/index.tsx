@@ -3,13 +3,15 @@ import { useRouter } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { DISASTER_BUTTONS } from "@/constants/emergency-data";
 import { haptic } from "@/lib/haptics";
+import { useSettings } from "@/hooks/use-settings";
 
 export default function HomeScreen() {
   const router = useRouter();
+  const { settings } = useSettings();
 
   const handleSOS = () => {
     haptic.heavy();
-    router.push("/panic?type=fire");
+    router.push("/sos");
   };
 
   const handleDisaster = (type: string) => {
@@ -35,6 +37,27 @@ export default function HomeScreen() {
           </View>
         </View>
 
+        {/* Family Contact Banner */}
+        {settings.familyNumber ? (
+          <View style={styles.contactBanner}>
+            <Text style={styles.contactText}>
+              📱 Emergency contact: {settings.familyNumber}
+            </Text>
+          </View>
+        ) : (
+          <Pressable
+            onPress={() => router.push("/(tabs)/settings")}
+            style={({ pressed }) => [
+              styles.contactBannerEmpty,
+              pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Text style={styles.contactTextEmpty}>
+              ➕ Add emergency contact in Settings
+            </Text>
+          </Pressable>
+        )}
+
         {/* SOS Button */}
         <View style={styles.sosContainer}>
           <Pressable
@@ -45,7 +68,7 @@ export default function HomeScreen() {
             ]}
           >
             <Text style={styles.sosText}>SOS</Text>
-            <Text style={styles.sosSubtext}>TAP FOR HELP</Text>
+            <Text style={styles.sosSubtext}>PRESS & SPEAK</Text>
           </Pressable>
         </View>
 
@@ -116,11 +139,39 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
   },
+  contactBanner: {
+    backgroundColor: "#0D6E6E30",
+    borderRadius: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: "#0D6E6E",
+  },
+  contactText: {
+    fontSize: 13,
+    color: "#afffff",
+    fontWeight: "600",
+  },
+  contactBannerEmpty: {
+    backgroundColor: "#354656",
+    borderRadius: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: "#354656",
+  },
+  contactTextEmpty: {
+    fontSize: 13,
+    color: "#e0e0e0",
+    fontWeight: "500",
+  },
   sosContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    minHeight: 180,
+    minHeight: 160,
   },
   sosButton: {
     width: 140,
@@ -142,7 +193,7 @@ const styles = StyleSheet.create({
     letterSpacing: 3,
   },
   sosSubtext: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: "600",
     color: "#FFFFFF",
     marginTop: 4,

@@ -112,6 +112,13 @@ const config: ExpoConfig = {
       },
     ],
     [
+      "expo-location",
+      {
+        locationAlwaysAndWhenInUsePermission: "Allow $(PRODUCT_NAME) to use your location for emergency SMS.",
+        locationWhenInUsePermission: "Allow $(PRODUCT_NAME) to use your location for emergency SMS."
+      }
+    ],
+    [
       "expo-build-properties",
       {
         android: {
