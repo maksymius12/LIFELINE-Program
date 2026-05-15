@@ -1,0 +1,51 @@
+{
+  "build_command": "pnpm run build",
+  "capabilities": [
+    "server",
+    "db",
+    "user"
+  ],
+  "dev_command": "pnpm run dev",
+  "env_vars": {
+    "DATABASE_URL": "mysql://4YAbz3pDrUpqgnE.90f5f81daa10:Zux75Vxx3YdNJ997MRzd@gateway04.us-east-1.prod.aws.tidbcloud.com:4000/isfBNSHsKePd6SwBPakXuc?ssl={\"rejectUnauthorized\":true}"
+  },
+  "experiments": [
+    "no_db_push"
+  ],
+  "git_remote": {
+    "repo_url": "s3://vida-prod-gitrepo/webdev-git/310519663434223574/isfBNSHsKePd6SwBPakXuc",
+    "access_key_id": "ASIAZV3A2ECZCVL6MVBG",
+    "secret_access_key": "jjNPY6+EAyE2+QiFeKfHgM0NZZIo3WeV8+zBOppw",
+    "session_token": "IQoJb3JpZ2luX2VjEK7//////////wEaCXVzLWVhc3QtMSJHMEUCIGx11ren13+qQjzpSw0Cdw6gZUhIDnAKcqNobsFx/0kLAiEAi7ow0AsUbYuk2MN8rybr+QSEVz1OGOQD3R4/gBPwMTEq9gMIdxAEGgw2NjUzODYwOTg4NjYiDPcrIGELF/Nq4xQAvCrTA1+BC6EQerarw6/zqutLZQEzpcTiTtmZZzmyW3CC2h7aIjHX8o5J9YsxPCXkyJ3UV7ya7yBx1aNwkXeSR8ILoUh72BukvAG95Cm5e84EjaHCZzpQ+AmXUXPxsuGe0Qk7MhOWoRuJ10lXEkucnz94+jNRfq/jrTtCqD7OGYBh+kyFDnqESFOoMkN+Ue5KMjTu1de2gS0XcGOovHJH2xaCeSc2XbB7l6coeA+fUwCins3oSDDHb14QxWKod8s19lV07O2vX4T5Fd8Bk3FWh5iyv+3eO6GgRHddEAOOO2WPoP7LDcFXFomptLVAGUzybJnQDX8kKbWjequxq1D7acyXqQ/ljk5voV50tckdWCzB1h0uhBkxqrvCQv7fkUa7v2xusc7SJZyKjA/dQbDGtS8nvoDQFj+LEb2M5KqNs/9k7VSIPvfs6f5YwYcXAybcOKlMXfuAPFYsENMOspM70Z7fXW/v8OZeXxN2nwgj4rzU+3DavjwX4gP85vIiRdlXEM8Ht9UvCxI4gvmJe6T5tkzHl2ZOjjlUnLhLS7zaV/4miY5/2Irfjfy06qCq0AHBkQiCEtJ+CPkUQ6lexjuv3lhBsO6gTCmZiTzAO4eHP91Y8T4ViGYpMNLDnNAGOp0BfMsTTk72ePwUA5Rk6TPS3dAICJ4Ci2qp6ErH5KNgtw765iZJJzXEF8ecmZVdac09h2yxEC/UJGXOhDQcchUpmR8ERkPd+va/zdg9mlyuwGRKMK9wpDsBLwf0l1Ym38jL+F92bU7IZiyr3lvM+F1ANBWS/X329eZzo48rZDHveY5RVvnNnLMAWhYjs1D6tIOdLkCxB25rSRDnXDeaag==",
+    "expiration": "2026-05-16T01:38:26.000Z"
+  },
+  "name": "lifeline",
+  "path": "/home/ubuntu/lifeline",
+  "port": 3000,
+  "secrets": {
+    "BUILT_IN_FORGE_API_KEY": "ftYApCXSspiMD4Cw83Pa69",
+    "BUILT_IN_FORGE_API_URL": "https://forge.manus.ai",
+    "EXPO_APP_QR_URL": "exps://8081-ihbnrqfff2y0l0ipo8na3-25c89971.us2.manus.computer",
+    "EXPO_PACKAGER_PROXY_URL": "https://8081-ihbnrqfff2y0l0ipo8na3-25c89971.us2.manus.computer",
+    "EXPO_PUBLIC_API_BASE_URL": "https://3000-ihbnrqfff2y0l0ipo8na3-25c89971.us2.manus.computer",
+    "EXPO_PUBLIC_OAUTH_PORTAL_URL": "https://manus.im",
+    "EXPO_PUBLIC_OAUTH_SERVER_URL": "https://api.manus.im",
+    "EXPO_PUBLIC_OWNER_NAME": "Полина Бондаренко",
+    "EXPO_PUBLIC_OWNER_OPEN_ID": "gaw7QZFDKi6PWfZorGpsSA",
+    "JWT_SECRET": "HxwdmUpdSYk7ufwXYTV6sf",
+    "OAUTH_SERVER_URL": "https://api.manus.im",
+    "OWNER_NAME": "Полина Бондаренко",
+    "OWNER_OPEN_ID": "gaw7QZFDKi6PWfZorGpsSA",
+    "REACT_NATIVE_PACKAGER_HOSTNAME": "8081-ihbnrqfff2y0l0ipo8na3-25c89971.us2.manus.computer",
+    "VITE_ANALYTICS_ENDPOINT": "https://manus-analytics.com",
+    "VITE_ANALYTICS_WEBSITE_ID": "3dc7ce04-2ec8-4d7f-86c0-34d79879c380",
+    "VITE_APP_ID": "isfBNSHsKePd6SwBPakXuc",
+    "VITE_APP_LOGO": "",
+    "VITE_APP_TITLE": "LIFELINE",
+    "VITE_FRONTEND_FORGE_API_KEY": "XFYwiR7jKMKBEcs9FebcGb",
+    "VITE_FRONTEND_FORGE_API_URL": "https://forge.manus.ai",
+    "VITE_OAUTH_PORTAL_URL": "https://manus.im"
+  },
+  "template_id": "app",
+  "test_command": "pnpm test"
+}
