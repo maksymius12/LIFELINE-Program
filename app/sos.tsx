@@ -1,14 +1,19 @@
 /**
- * SOS Screen — 911-style AI Operator Call
+ * SOS Screen — Fully Voice-Driven 911-style AI Operator
  *
- * The AI acts as a 911 dispatcher:
- *   1. User presses SOS → AI greets: "LIFELINE. What's your emergency?"
- *   2. User speaks → audio uploaded → Whisper transcribes → LLM responds
- *   3. AI speaks response via TTS + shows instruction on screen
- *   4. User can speak again for follow-up turns (continuous conversation)
- *   5. AI may trigger: Call 103, SMS family, show step-by-step guide
+ * VOICE-ONLY MODE:
+ *   1. Screen opens → AI immediately greets: "LIFELINE. What's your emergency?"
+ *   2. After AI speaks, recording starts AUTOMATICALLY (no tap needed)
+ *   3. User speaks → 4-second silence detection → auto-sends to AI
+ *   4. AI responds via TTS → auto-starts listening again
+ *   5. Continuous loop until user says "end call" or taps End
  *
- * On web or when mic is unavailable, a text input fallback is shown.
+ * Voice commands work at any point:
+ *   "call 103" → dials emergency
+ *   "end call" / "back" → exits
+ *   "repeat" → replays last AI message
+ *
+ * Text input is available as a fallback (web / no mic).
  */
 import {
   Text,
@@ -45,16 +50,20 @@ import { sendEmergencySMS } from "@/lib/family-sms";
 import { useAppContext } from "@/lib/app-context";
 import { parseAndExecute, MOCK_SCENARIOS, type EScript } from "@/lib/EScriptEngine";
 import { EScriptRenderer } from "@/components/escripts/EScriptRenderer";
+import { matchVoiceCommand } from "@/lib/voice-commands";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type CallState = "idle" | "connecting" | "listening" | "processing" | "active";
+type CallState = "idle" | "connecting" | "listening" | "processing" | "active" | "speaking";
 
 interface DisplayMessage {
   role: "ai" | "user";
   text: string;
   instruction?: string;
 }
+
+// Silence detection: stop recording after N ms of no new audio chunks
+const SILENCE_TIMEOUT_MS = 3500;
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -72,8 +81,13 @@ export default function SOSScreen() {
   const [textInput, setTextInput] = useState("");
   const [activeScript, setActiveScript] = useState<EScript | null>(null);
   const [showMockMenu, setShowMockMenu] = useState(false);
+  const [lastAiText, setLastAiText] = useState<string>("");
+  const [voiceHint, setVoiceHint] = useState<string>("Tap SOS to connect");
 
   const scrollRef = useRef<ScrollView>(null);
+  const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const historyRef = useRef<ConversationMessage[]>([]);
+  historyRef.current = history;
 
   // Animations
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -161,25 +175,31 @@ export default function SOSScreen() {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
   }, [messages]);
 
-  // ─── Start the call ──────────────────────────────────────────────────────────
-  const startCall = useCallback(async () => {
-    haptic.heavy();
-    registerTap();
-    setCallState("connecting");
-    setMessages([]);
-    setHistory([]);
-    setCurrentInstruction("");
-    setErrorText(null);
-
-    // First turn: empty history → AI greets with "What's your emergency?"
-    try {
-      const response = await chatWithOperator([], undefined, undefined);
-      applyResponse(response, []);
-    } catch {
-      setErrorText("Cannot reach AI — check connection");
-      setCallState("idle");
-    }
+  // ── Cleanup silence timer on unmount ───────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      if (silenceTimer.current) clearTimeout(silenceTimer.current);
+    };
   }, []);
+
+  // ─── Auto-start listening after AI speaks ────────────────────────────────────
+  const autoStartListening = useCallback(async () => {
+    if (!micAvailable) return;
+    setCallState("listening");
+    setVoiceHint("Listening… speak now");
+    try {
+      await audioRecorder.prepareToRecordAsync();
+      audioRecorder.record();
+      // Auto-stop after silence timeout
+      if (silenceTimer.current) clearTimeout(silenceTimer.current);
+      silenceTimer.current = setTimeout(() => {
+        stopListeningAndSend();
+      }, SILENCE_TIMEOUT_MS);
+    } catch {
+      setCallState("active");
+      setVoiceHint("Tap mic to speak");
+    }
+  }, [micAvailable]);
 
   // ─── Apply AI response to UI ─────────────────────────────────────────────────
   const applyResponse = useCallback(
@@ -191,14 +211,13 @@ export default function SOSScreen() {
       };
       setMessages((prev) => [...prev, aiMsg]);
       setCurrentInstruction(response.instruction);
+      setLastAiText(response.spoken);
 
       const newHistory: ConversationMessage[] = [
         ...currentHistory,
         { role: "assistant", content: response.spoken },
       ];
       setHistory(newHistory);
-
-      speakInstruction(response.spoken, { panicMode: panicDetected });
 
       if (response.severity === "critical") haptic.error();
       else haptic.success();
@@ -211,7 +230,6 @@ export default function SOSScreen() {
         sendEmergencySMS().catch(() => {});
       }
       if (response.action === "SHOW_STEPS" && response.steps.length > 0) {
-        // Convert steps to an EScript scheme
         const schemeScript = JSON.stringify({
           voice_backup: response.spoken,
           action_type: "UI_SHOW_SCHEME",
@@ -226,51 +244,89 @@ export default function SOSScreen() {
         if (parsed.success) {
           setActiveScript(parsed.script);
           setCallState("active");
+          // Speak then auto-listen
+          speakInstruction(response.spoken, { panicMode: panicDetected });
           return;
         }
       }
 
-      setCallState("active");
+      setCallState("speaking");
+      setVoiceHint("AI is speaking…");
+      // Speak, then auto-start listening
+      speakInstruction(response.spoken, {
+        panicMode: panicDetected,
+        onDone: () => {
+          setCallState("active");
+          // Small delay then auto-listen
+          setTimeout(() => autoStartListening(), 600);
+        },
+      });
     },
-    [panicDetected]
+    [panicDetected, autoStartListening]
   );
 
-  // ─── Start recording a voice reply ──────────────────────────────────────────
-  const startListening = useCallback(async () => {
-    if (callState !== "active") return;
-    haptic.medium();
-    setCallState("listening");
-    stopSpeech();
+  // ─── Start the call ──────────────────────────────────────────────────────────
+  const startCall = useCallback(async () => {
+    haptic.heavy();
+    registerTap();
+    setCallState("connecting");
+    setMessages([]);
+    setHistory([]);
+    setCurrentInstruction("");
+    setErrorText(null);
+    setVoiceHint("Connecting…");
+
     try {
-      await audioRecorder.prepareToRecordAsync();
-      audioRecorder.record();
+      const response = await chatWithOperator([], undefined, undefined);
+      applyResponse(response, []);
     } catch {
-      setErrorText("Mic unavailable — type your message below");
-      setCallState("active");
+      setErrorText("Cannot reach AI — check connection");
+      setCallState("idle");
     }
-  }, [callState]);
+  }, [applyResponse]);
 
   // ─── Stop recording and send to AI ──────────────────────────────────────────
   const stopListeningAndSend = useCallback(async () => {
-    if (callState !== "listening") return;
-    haptic.medium();
-    setCallState("processing");
+    if (silenceTimer.current) {
+      clearTimeout(silenceTimer.current);
+      silenceTimer.current = null;
+    }
+    // Guard: only proceed if we're actually listening
+    setCallState((prev) => {
+      if (prev !== "listening") return prev;
+      return "processing";
+    });
+
     stopSpeech();
+    setVoiceHint("Processing…");
 
     try {
       await audioRecorder.stop();
       const uri = audioRecorder.uri;
-
-      // Upload audio to S3 so server can transcribe it
       const audioUrl = uri ? await uploadAudioUri(uri) : null;
 
-      // Add placeholder user message while processing
       setMessages((prev) => [...prev, { role: "user", text: "🎤 …" }]);
 
-      const response = await chatWithOperator(history, audioUrl ?? undefined, undefined);
+      const currentHistory = historyRef.current;
+      const response = await chatWithOperator(currentHistory, audioUrl ?? undefined, undefined);
 
-      // Replace placeholder with actual transcript if available
+      // Check for voice command to end call
       if (response.transcript) {
+        const cmd = matchVoiceCommand(response.transcript);
+        if (cmd === "back") {
+          handleBack();
+          return;
+        }
+        if (cmd === "call") {
+          Linking.openURL("tel:103");
+          return;
+        }
+        if (cmd === "repeat" && lastAiText) {
+          speakInstruction(lastAiText, { panicMode: panicDetected });
+          setCallState("speaking");
+          setTimeout(() => autoStartListening(), 600);
+          return;
+        }
         setMessages((prev) => {
           const updated = [...prev];
           const lastIdx = updated.length - 1;
@@ -282,21 +338,36 @@ export default function SOSScreen() {
       }
 
       const newHistory: ConversationMessage[] = [
-        ...history,
+        ...currentHistory,
         ...(response.transcript ? [{ role: "user" as const, content: response.transcript }] : []),
       ];
 
       applyResponse(response, newHistory);
     } catch {
-      setErrorText("Failed to send — try typing below");
+      setErrorText("Failed to process voice — try again");
       setCallState("active");
+      setVoiceHint("Tap mic to speak");
     }
-  }, [callState, history, applyResponse]);
+  }, [lastAiText, panicDetected, applyResponse, autoStartListening]);
+
+  // ─── Manual mic button (tap to start/stop) ──────────────────────────────────
+  const handleMicPress = useCallback(() => {
+    if (callState === "listening") {
+      if (silenceTimer.current) {
+        clearTimeout(silenceTimer.current);
+        silenceTimer.current = null;
+      }
+      stopListeningAndSend();
+    } else if (callState === "active" || callState === "speaking") {
+      stopSpeech();
+      autoStartListening();
+    }
+  }, [callState, stopListeningAndSend, autoStartListening]);
 
   // ─── Send typed text ─────────────────────────────────────────────────────────
   const sendText = useCallback(async () => {
     const text = textInput.trim();
-    if (!text || callState !== "active") return;
+    if (!text || (callState !== "active" && callState !== "speaking")) return;
     setTextInput("");
     haptic.light();
     stopSpeech();
@@ -341,7 +412,8 @@ export default function SOSScreen() {
   const handleScriptDismiss = useCallback(() => {
     setActiveScript(null);
     setCallState("active");
-  }, []);
+    setTimeout(() => autoStartListening(), 400);
+  }, [autoStartListening]);
 
   // ─── Mock demo ───────────────────────────────────────────────────────────────
   const handleMockScenario = (key: string) => {
@@ -357,17 +429,12 @@ export default function SOSScreen() {
     }
   };
 
-  const handleBack = () => {
+  const handleBack = useCallback(() => {
     stopSpeech();
+    if (silenceTimer.current) clearTimeout(silenceTimer.current);
     audioRecorder.stop().catch(() => {});
     router.back();
-  };
-
-  // ─── Mic button press ────────────────────────────────────────────────────────
-  const handleMicPress = () => {
-    if (callState === "listening") stopListeningAndSend();
-    else if (callState === "active") startListening();
-  };
+  }, []);
 
   // ─── Render: EScript active ──────────────────────────────────────────────────
   if (activeScript) {
@@ -428,8 +495,13 @@ export default function SOSScreen() {
               </Pressable>
             </Animated.View>
 
+            <View style={styles.voiceOnlyBadge}>
+              <Text style={styles.voiceOnlyIcon}>🎙</Text>
+              <Text style={styles.voiceOnlyText}>Voice-only — no tapping needed</Text>
+            </View>
+
             <Text style={styles.idleDesc}>
-              AI will listen and guide you step by step
+              AI listens automatically after every response
             </Text>
           </View>
 
@@ -447,6 +519,7 @@ export default function SOSScreen() {
   // ─── Render: Active call ─────────────────────────────────────────────────────
   const isListening = callState === "listening";
   const isProcessing = callState === "processing" || callState === "connecting";
+  const isSpeaking = callState === "speaking";
   const spinInterp = spinAnim.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
 
   return (
@@ -460,11 +533,15 @@ export default function SOSScreen() {
           {/* Call header */}
           <View style={styles.callHeader}>
             <View style={styles.callStatus}>
-              <View style={[styles.callDot, { backgroundColor: isProcessing ? "#FF9500" : "#22C55E" }]} />
+              <View style={[
+                styles.callDot,
+                { backgroundColor: isProcessing ? "#FF9500" : isListening ? "#4a9d9c" : isSpeaking ? "#22C55E" : "#22C55E" }
+              ]} />
               <Text style={styles.callStatusText}>
                 {callState === "connecting" ? "Connecting…"
                   : callState === "processing" ? "Processing…"
-                  : callState === "listening" ? "Listening…"
+                  : callState === "listening" ? "🎙 Listening…"
+                  : callState === "speaking" ? "🔊 AI Speaking…"
                   : "LIFELINE Active"}
               </Text>
             </View>
@@ -510,15 +587,20 @@ export default function SOSScreen() {
             <Text style={styles.errorText}>⚠ {errorText}</Text>
           )}
 
-          {/* Mic / voice input area */}
+          {/* Voice status + mic button */}
           <View style={styles.inputArea}>
             {micAvailable ? (
               <View style={styles.micRow}>
-                {/* Speak again button */}
+                {/* Large mic button — tap to interrupt or manually trigger */}
                 <Pressable
                   onPress={handleMicPress}
                   disabled={isProcessing}
-                  style={[styles.micBtn, isListening && styles.micBtnActive, isProcessing && styles.micBtnDisabled]}
+                  style={[
+                    styles.micBtn,
+                    isListening && styles.micBtnListening,
+                    isSpeaking && styles.micBtnSpeaking,
+                    isProcessing && styles.micBtnDisabled,
+                  ]}
                 >
                   {isListening ? (
                     <View style={styles.waveRow}>
@@ -528,12 +610,21 @@ export default function SOSScreen() {
                     </View>
                   ) : isProcessing ? (
                     <Animated.View style={[styles.spinner, { transform: [{ rotate: spinInterp }] }]} />
+                  ) : isSpeaking ? (
+                    <Text style={styles.micIcon}>🔊</Text>
                   ) : (
                     <Text style={styles.micIcon}>🎤</Text>
                   )}
                 </Pressable>
-                <Text style={styles.micHint}>
-                  {isListening ? "Tap to send" : isProcessing ? "Processing…" : "Tap to speak"}
+                <Text style={styles.voiceHintText}>{voiceHint}</Text>
+                <Text style={styles.voiceAutoNote}>
+                  {isListening
+                    ? "Auto-sends after 3.5s silence • tap to send now"
+                    : isSpeaking
+                    ? "Tap to interrupt AI and speak"
+                    : isProcessing
+                    ? ""
+                    : "Tap mic to speak • auto-listens after AI responds"}
                 </Text>
               </View>
             ) : (
@@ -559,8 +650,8 @@ export default function SOSScreen() {
               </View>
             )}
 
-            {/* Also show text input as fallback even when mic is available */}
-            {micAvailable && callState === "active" && (
+            {/* Text fallback even when mic is available */}
+            {micAvailable && (callState === "active" || callState === "speaking") && (
               <View style={[styles.textRow, { marginTop: 8 }]}>
                 <TextInput
                   style={styles.textIn}
@@ -629,7 +720,20 @@ const styles = StyleSheet.create({
   },
   startBtnLabel: { fontSize: 64, fontWeight: "900", color: "#FFF", letterSpacing: 6 },
   startBtnHint: { fontSize: 11, fontWeight: "700", color: "#FFF", marginTop: 6, opacity: 0.85, letterSpacing: 2 },
-  idleDesc: { fontSize: 14, color: "#687076", textAlign: "center", paddingHorizontal: 32 },
+  voiceOnlyBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#0D6E6E30",
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderWidth: 1,
+    borderColor: "#4a9d9c60",
+  },
+  voiceOnlyIcon: { fontSize: 16 },
+  voiceOnlyText: { fontSize: 13, color: "#4a9d9c", fontWeight: "700" },
+  idleDesc: { fontSize: 13, color: "#687076", textAlign: "center", paddingHorizontal: 32 },
 
   // ── Active call ──
   callContainer: { flex: 1, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12 },
@@ -691,23 +795,25 @@ const styles = StyleSheet.create({
   // Error
   errorText: { fontSize: 13, color: "#FF3D3D", textAlign: "center", marginVertical: 4 },
 
-  // Input area
+  // Input area — voice-driven
   inputArea: { marginTop: 8, marginBottom: 8 },
-  micRow: { alignItems: "center", gap: 8 },
+  micRow: { alignItems: "center", gap: 6 },
   micBtn: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     backgroundColor: "#1d2e3d",
     justifyContent: "center",
     alignItems: "center",
     borderWidth: 2,
     borderColor: "#4a9d9c",
   },
-  micBtnActive: { backgroundColor: "#4a9d9c", borderColor: "#4a9d9c" },
+  micBtnListening: { backgroundColor: "#4a9d9c", borderColor: "#4a9d9c" },
+  micBtnSpeaking: { backgroundColor: "#22C55E30", borderColor: "#22C55E" },
   micBtnDisabled: { opacity: 0.5 },
-  micIcon: { fontSize: 30 },
-  micHint: { fontSize: 12, color: "#687076", fontWeight: "600" },
+  micIcon: { fontSize: 32 },
+  voiceHintText: { fontSize: 15, color: "#FFFFFF", fontWeight: "700" },
+  voiceAutoNote: { fontSize: 11, color: "#687076", textAlign: "center", paddingHorizontal: 20 },
   waveRow: { flexDirection: "row", alignItems: "center", gap: 4, height: 36 },
   waveBar: { width: 5, height: 28, borderRadius: 3, backgroundColor: "#FFFFFF" },
   spinner: {
@@ -773,5 +879,5 @@ const styles = StyleSheet.create({
   },
   mockBtnText: { fontSize: 17, fontWeight: "700", color: "#FFFFFF" },
   mockCancel: { paddingVertical: 14, alignItems: "center" },
-  mockCancelText: { fontSize: 16, color: "#687076", fontWeight: "600" },
+  mockCancelText: { fontSize: 15, color: "#687076" },
 });

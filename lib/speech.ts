@@ -14,16 +14,22 @@ const isTTSEnabled = async (): Promise<boolean> => {
 
 export const speakInstruction = async (
   text: string,
-  options?: { panicMode?: boolean; rate?: number }
+  options?: { panicMode?: boolean; rate?: number; onDone?: () => void }
 ) => {
   const enabled = await isTTSEnabled();
-  if (!enabled) return;
+  if (!enabled) {
+    // Still call onDone so voice loop continues even when TTS is off
+    options?.onDone?.();
+    return;
+  }
   Speech.stop();
   Speech.speak(text, {
     rate: options?.panicMode ? 0.8 : (options?.rate ?? 0.9),
     pitch: 1.0,
     language: "en-US",
     volume: 1.0,
+    onDone: options?.onDone,
+    onStopped: options?.onDone, // also fire if speech is interrupted
   });
 };
 

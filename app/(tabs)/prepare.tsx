@@ -114,8 +114,8 @@ export default function PrepareScreen() {
     setSession((prev) => prev ? { ...prev, phase: "evaluating" } : prev);
     try {
       await audioRecorder.stop();
-      const uri = audioRecorder.uri ?? "";
-      let transcript = "";
+      const uri: string = String(audioRecorder.uri ?? "");
+      let transcript: string | null = null;
       if (uri) {
         transcript = await transcribeAudioUri(uri);
       }
