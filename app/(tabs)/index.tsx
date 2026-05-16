@@ -1,6 +1,7 @@
 import { Text, View, Pressable, Linking, StyleSheet, Animated } from "react-native";
 import { useRouter } from "expo-router";
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
+import Svg, { Path, Rect, Line } from "react-native-svg";
 import { ScreenContainer } from "@/components/screen-container";
 import { DISASTER_BUTTONS } from "@/constants/emergency-data";
 import { haptic } from "@/lib/haptics";
@@ -13,6 +14,27 @@ export default function HomeScreen() {
   const { blackoutMode, toggleBlackoutMode, batteryLevel } = useAppContext();
   const [showManual, setShowManual] = useState(false);
   const scaleAnim = useRef(new Animated.Value(1)).current;
+  // Voice bar animations for the SOS button idle state
+  const voiceBars = useRef(Array.from({ length: 5 }, () => new Animated.Value(0.3))).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.parallel(
+        voiceBars.map((bar, i) =>
+          Animated.sequence([
+            Animated.delay(i * 120),
+            Animated.loop(
+              Animated.sequence([
+                Animated.timing(bar, { toValue: 1, duration: 350 + i * 60, useNativeDriver: true }),
+                Animated.timing(bar, { toValue: 0.25, duration: 350 + i * 60, useNativeDriver: true }),
+              ])
+            ),
+          ])
+        )
+      )
+    );
+    loop.start();
+    return () => loop.stop();
+  }, []);
 
   const handleSOS = () => {
     haptic.heavy();
@@ -96,8 +118,36 @@ export default function HomeScreen() {
                 pressed && { opacity: 0.9 },
               ]}
             >
-              <Text style={styles.sosLabel}>SOS</Text>
-              <Text style={styles.sosHint}>PRESS & SPEAK</Text>
+              {/* Microphone icon */}
+              <Svg width={64} height={64} viewBox="0 0 64 64" fill="none">
+                {/* Mic body */}
+                <Rect x="22" y="6" width="20" height="32" rx="10" fill="white" />
+                {/* Mic stand arc */}
+                <Path
+                  d="M14 32 C14 46 50 46 50 32"
+                  stroke="white"
+                  strokeWidth="3.5"
+                  strokeLinecap="round"
+                  fill="none"
+                />
+                {/* Mic stand line */}
+                <Line x1="32" y1="46" x2="32" y2="56" stroke="white" strokeWidth="3.5" strokeLinecap="round" />
+                {/* Base */}
+                <Line x1="22" y1="56" x2="42" y2="56" stroke="white" strokeWidth="3.5" strokeLinecap="round" />
+              </Svg>
+
+              {/* Animated voice bars */}
+              <View style={styles.voiceBarsRow}>
+                {voiceBars.map((bar, i) => (
+                  <Animated.View
+                    key={i}
+                    style={[
+                      styles.voiceBar,
+                      { transform: [{ scaleY: bar }] },
+                    ]}
+                  />
+                ))}
+              </View>
             </Pressable>
           </Animated.View>
           <Text style={styles.sosDesc}>AI will guide you step by step</Text>
@@ -214,19 +264,18 @@ const styles = StyleSheet.create({
     shadowRadius: 40,
     elevation: 20,
   },
-  sosLabel: {
-    fontSize: 56,
-    fontWeight: "900",
-    color: "#FFFFFF",
-    letterSpacing: 6,
+  voiceBarsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 14,
+    height: 28,
   },
-  sosHint: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#FFFFFF",
-    marginTop: 6,
-    opacity: 0.85,
-    letterSpacing: 2,
+  voiceBar: {
+    width: 5,
+    height: 28,
+    borderRadius: 3,
+    backgroundColor: "rgba(255,255,255,0.85)",
   },
   sosDesc: {
     fontSize: 13,
