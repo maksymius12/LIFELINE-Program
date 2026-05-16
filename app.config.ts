@@ -47,6 +47,9 @@ const config: ExpoConfig = {
   scheme: env.scheme,
   userInterfaceStyle: "automatic",
   newArchEnabled: true,
+  extra: {
+    geminiApiKey: process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? "",
+  },
   ios: {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
@@ -86,15 +89,6 @@ const config: ExpoConfig = {
   },
   plugins: [
     "expo-router",
-    [
-      "llama.rn",
-      {
-        enableEntitlements: true,
-        entitlementsProfile: "production",
-        forceCxx20: true,
-        enableOpenCL: true,
-      },
-    ],
     [
       "expo-audio",
       {

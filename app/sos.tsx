@@ -1,22 +1,17 @@
 /**
- * SOS ACTIVE EMERGENCY SCREEN — Voice-Only
+ * SOS ACTIVE EMERGENCY SCREEN — Voice-Only, Expo Go compatible
  *
- * ONLY 4 ELEMENTS:
- *   1. Call 103 bar — always at top
- *   2. Map with user position (expo-location + react-native-maps)
- *   3. Single instruction — large, high-contrast, max 8 words
- *   4. Listening indicator ("~~~~ listening ~~~~")
+ * Voice loop:
+ *   1. Auto-starts on mount → AI greets
+ *   2. Auto-starts recording after AI speaks
+ *   3. Silence (3.5s) → stop recording
+ *   4. Gemini transcribes audio (base64) → analyzes → responds
+ *   5. expo-speech reads response aloud
+ *   6. Loop back to step 2
  *
- * VOICE LOOP:
- *   Press SOS → AI says "Tell me what happened"
- *   → expo-audio records → Whisper transcribes → Gemma responds
- *   → expo-speech reads response LOUDLY and IMMEDIATELY
- *   → auto-starts listening again
- *   → user says "done" → next step
- *   → loop never stops until "stop" / "home" / "назад"
+ * Voice commands: "done" / "repeat" / "call" / "stop"
  *
- * NO text inputs. NO chat bubbles. NO keyboard. NO menus. NO scrolling.
- * NO buttons except Call 103 and End (hidden, top-right, small).
+ * NO text inputs. NO chat bubbles. NO keyboard.
  */
 import {
   Text,
@@ -41,21 +36,22 @@ import * as Speech from "expo-speech";
 import * as Location from "expo-location";
 import { ScreenContainer } from "@/components/screen-container";
 import { haptic } from "@/lib/haptics";
-import { chatWithOperatorLocal } from "@/lib/local-emergency-chat";
-import { initLocalLLM } from "@/lib/local-llm";
-import { uploadAudioUri } from "@/lib/transcription";
+import {
+  analyzeEmergencyWithGemini,
+  transcribeWithGemini,
+  type GeminiEmergencyResponse,
+} from "@/lib/gemini";
 import { sendEmergencySMS } from "@/lib/family-sms";
 import { useAppContext } from "@/lib/app-context";
 import { EmergencyMap } from "@/components/EmergencyMap";
-import type { ConversationMessage, OperatorResponse } from "@/lib/ai-analysis";
+import type { ConversationMessage } from "@/lib/ai-analysis";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Phase = "idle" | "connecting" | "listening" | "processing" | "speaking";
-
 interface Coords { latitude: number; longitude: number; }
 
-// ─── TTS helper — always loud, slightly slow ──────────────────────────────────
+// ─── TTS helper ───────────────────────────────────────────────────────────────
 
 function speak(text: string, onDone?: () => void) {
   Speech.stop();
@@ -72,17 +68,15 @@ function speak(text: string, onDone?: () => void) {
 
 // ─── Voice command detection ──────────────────────────────────────────────────
 
-function detectCommand(text: string): "done" | "repeat" | "cant" | "call" | "stop" | null {
-  const t = text.toLowerCase().trim();
-  if (/\b(done|готово|ok|okay|next|далі)\b/.test(t)) return "done";
+function detectCommand(text: string): "done" | "repeat" | "call" | "stop" | null {
+  const t = text.toLowerCase();
+  if (/\b(done|готово|ok|okay|next|далі|finished)\b/.test(t)) return "done";
   if (/\b(repeat|повтори|again|ще раз)\b/.test(t)) return "repeat";
-  if (/\b(can'?t|cannot|не можу|unable)\b/.test(t)) return "cant";
-  if (/\b(call|виклик|103|emergency)\b/.test(t)) return "call";
-  if (/\b(stop|home|назад|back|cancel|end)\b/.test(t)) return "stop";
+  if (/\b(call|виклик|103|emergency services)\b/.test(t)) return "call";
+  if (/\b(stop|home|назад|back|cancel|end|quit)\b/.test(t)) return "stop";
   return null;
 }
 
-// ─── Silence detection ────────────────────────────────────────────────────────
 const SILENCE_MS = 3500;
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -93,8 +87,9 @@ export default function SOSScreen() {
   const { panicDetected } = useAppContext();
 
   const [phase, setPhase] = useState<Phase>("idle");
-  const [instruction, setInstruction] = useState("");
+  const [instruction, setInstruction] = useState("Connecting…");
   const [lastInstruction, setLastInstruction] = useState("");
+  const [lastSpoken, setLastSpoken] = useState("");
   const [coords, setCoords] = useState<Coords | null>(null);
   const [aiRoute, setAiRoute] = useState<Coords[] | undefined>(undefined);
   const [micAvailable, setMicAvailable] = useState(true);
@@ -129,10 +124,7 @@ export default function SOSScreen() {
 
   // ── Setup ────────────────────────────────────────────────────────────────────
   useEffect(() => {
-    initLocalLLM().catch(() => {});
-
     (async () => {
-      // Mic permission
       if (Platform.OS !== "web") {
         const { granted } = await requestRecordingPermissionsAsync();
         setMicAvailable(granted);
@@ -143,11 +135,12 @@ export default function SOSScreen() {
         setMicAvailable(false);
       }
 
-      // Location
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status === "granted") {
-          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+          const loc = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+          });
           setCoords({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
         }
       } catch {}
@@ -161,12 +154,11 @@ export default function SOSScreen() {
 
   // ── Auto-start on mount ───────────────────────────────────────────────────────
   useEffect(() => {
-    // Small delay so screen renders first
-    const t = setTimeout(() => startCall(), 600);
+    const t = setTimeout(() => startCall(), 700);
     return () => clearTimeout(t);
   }, []);
 
-  // ── Start listening (auto-record) ─────────────────────────────────────────────
+  // ── Start listening ───────────────────────────────────────────────────────────
   const startListening = useCallback(async () => {
     if (!micAvailable) return;
     setPhase("listening");
@@ -182,30 +174,32 @@ export default function SOSScreen() {
 
   // ── Apply AI response ─────────────────────────────────────────────────────────
   const applyResponse = useCallback(
-    (response: OperatorResponse & { usedLocalModel?: boolean }, currentHistory: ConversationMessage[]) => {
-      const instr = response.instruction || response.spoken;
+    (result: GeminiEmergencyResponse, transcript: string, currentHistory: ConversationMessage[]) => {
+      const instr = result.firstInstruction;
+      const spoken = result.spokenResponse;
+
       setInstruction(instr);
       setLastInstruction(instr);
+      setLastSpoken(spoken);
 
       const newHistory: ConversationMessage[] = [
         ...currentHistory,
-        { role: "assistant", content: response.spoken },
+        { role: "assistant", content: spoken },
       ];
       setHistory(newHistory);
 
-      if (response.severity === "critical") haptic.error();
+      if (result.severity === "critical") haptic.error();
       else haptic.success();
 
-      if (response.action === "CALL_103") {
-        setTimeout(() => Linking.openURL("tel:103"), 1500);
+      if (result.shouldCall103) {
+        setTimeout(() => Linking.openURL("tel:103"), 2000);
       }
-      if (response.action === "SMS_FAMILY") {
+      if (result.shouldSMSFamily) {
         sendEmergencySMS().catch(() => {});
       }
 
-      // Parse route from steps if available
-      if (response.steps && response.steps.length > 0 && coords) {
-        // Simple: show a northward route arrow from current position
+      // Show a simple route indicator on map if we have coords
+      if (result.evacuationDirection && coords) {
         const routePoint = {
           latitude: coords.latitude + 0.002,
           longitude: coords.longitude,
@@ -214,7 +208,7 @@ export default function SOSScreen() {
       }
 
       setPhase("speaking");
-      speak(response.spoken, () => {
+      speak(spoken, () => {
         setPhase("listening");
         setTimeout(() => startListening(), 400);
       });
@@ -228,17 +222,23 @@ export default function SOSScreen() {
     setPhase("connecting");
     setInstruction("Connecting…");
 
-    try {
-      const response = await chatWithOperatorLocal([], undefined, undefined);
-      applyResponse(response, []);
-    } catch {
-      setInstruction("AI unavailable. Call 103.");
-      setPhase("speaking");
-      speak("AI is unavailable. Please call 103 for emergency services.");
-    }
-  }, [applyResponse]);
+    const greeting = "LIFELINE active. Tell me what happened.";
+    setInstruction("Tell me what happened");
+    setLastSpoken(greeting);
 
-  // ── Stop recording and send to AI ─────────────────────────────────────────────
+    const initHistory: ConversationMessage[] = [
+      { role: "assistant", content: greeting },
+    ];
+    setHistory(initHistory);
+
+    setPhase("speaking");
+    speak(greeting, () => {
+      setPhase("listening");
+      setTimeout(() => startListening(), 400);
+    });
+  }, [startListening]);
+
+  // ── Stop recording and send to Gemini ─────────────────────────────────────────
   const stopAndSend = useCallback(async () => {
     if (silenceTimer.current) { clearTimeout(silenceTimer.current); silenceTimer.current = null; }
     setPhase("processing");
@@ -248,41 +248,60 @@ export default function SOSScreen() {
     try {
       await audioRecorder.stop();
       const uri = audioRecorder.uri;
-      const audioUrl = uri ? await uploadAudioUri(uri) : null;
 
-      const currentHistory = historyRef.current;
-      const response = await chatWithOperatorLocal(currentHistory, audioUrl ?? undefined, undefined);
-
-      // Voice command detection
-      if (response.transcript) {
-        const cmd = detectCommand(response.transcript);
-        if (cmd === "stop") { handleBack(); return; }
-        if (cmd === "call") { Linking.openURL("tel:103"); return; }
-        if (cmd === "repeat") {
-          setPhase("speaking");
-          speak(lastInstruction, () => {
-            setPhase("listening");
-            setTimeout(() => startListening(), 400);
-          });
-          return;
-        }
-        // "done" and "cant" fall through to normal AI response
+      // Transcribe with Gemini
+      let transcript = "";
+      if (uri && Platform.OS !== "web") {
+        transcript = await transcribeWithGemini(uri);
       }
 
+      if (!transcript || transcript.trim().length === 0) {
+        setPhase("speaking");
+        speak("I didn't catch that. Please speak again.", () => {
+          setPhase("listening");
+          setTimeout(() => startListening(), 400);
+        });
+        return;
+      }
+
+      // Voice command check
+      const cmd = detectCommand(transcript);
+      if (cmd === "stop") { handleBack(); return; }
+      if (cmd === "call") { Linking.openURL("tel:103"); return; }
+      if (cmd === "repeat") {
+        setPhase("speaking");
+        speak(lastSpoken || lastInstruction, () => {
+          setPhase("listening");
+          setTimeout(() => startListening(), 400);
+        });
+        return;
+      }
+
+      // Add user message to history
+      const currentHistory = historyRef.current;
       const newHistory: ConversationMessage[] = [
-        ...historyRef.current,
-        ...(response.transcript ? [{ role: "user" as const, content: response.transcript }] : []),
+        ...currentHistory,
+        { role: "user", content: transcript },
       ];
-      applyResponse(response, newHistory);
-    } catch {
-      setInstruction("Didn't catch that. Speak again.");
+      setHistory(newHistory);
+
+      // Analyze with Gemini
+      const result = await analyzeEmergencyWithGemini(
+        transcript,
+        coords,
+        currentHistory
+      );
+
+      applyResponse(result, transcript, newHistory);
+    } catch (e) {
+      console.error("[SOS] stopAndSend error:", e);
       setPhase("speaking");
       speak("I didn't catch that. Please speak again.", () => {
         setPhase("listening");
         setTimeout(() => startListening(), 400);
       });
     }
-  }, [lastInstruction, applyResponse, startListening]);
+  }, [lastInstruction, lastSpoken, coords, applyResponse, startListening]);
 
   // ── Back / end call ───────────────────────────────────────────────────────────
   const handleBack = useCallback(() => {
@@ -295,6 +314,7 @@ export default function SOSScreen() {
   // ── Render ────────────────────────────────────────────────────────────────────
   const isListening = phase === "listening";
   const isProcessing = phase === "processing" || phase === "connecting";
+  const isSpeaking = phase === "speaking";
 
   return (
     <ScreenContainer containerClassName="bg-[#0a0f14]" edges={["top", "left", "right", "bottom"]}>
@@ -318,7 +338,7 @@ export default function SOSScreen() {
           emergencyType="fire"
           aiRoute={aiRoute}
           aiInstruction={instruction}
-          height={220}
+          height={200}
           onMapReady={(c) => setCoords(c)}
         />
       </View>
@@ -338,8 +358,10 @@ export default function SOSScreen() {
           </Animated.Text>
         ) : isProcessing ? (
           <Text style={styles.processingText}>● processing…</Text>
-        ) : (
+        ) : isSpeaking ? (
           <Text style={styles.speakingText}>🔊 speaking…</Text>
+        ) : (
+          <Text style={styles.idleText}>Tap SOS to start</Text>
         )}
       </View>
 
@@ -348,7 +370,6 @@ export default function SOSScreen() {
 }
 
 const styles = StyleSheet.create({
-  // Top bar
   topBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -383,12 +404,9 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#9BA1A6",
   },
-  // Map
   mapContainer: {
-    marginHorizontal: 0,
     overflow: "hidden",
   },
-  // Instruction
   instructionWrap: {
     flex: 1,
     justifyContent: "center",
@@ -404,9 +422,8 @@ const styles = StyleSheet.create({
     lineHeight: 42,
     letterSpacing: 0.3,
   },
-  // Listening indicator
   listenWrap: {
-    paddingBottom: 24,
+    paddingBottom: 28,
     alignItems: "center",
   },
   listenText: {
@@ -426,5 +443,9 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#22C55E",
     letterSpacing: 1,
+  },
+  idleText: {
+    fontSize: 14,
+    color: "#4a5568",
   },
 });
