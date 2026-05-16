@@ -6,6 +6,7 @@ import {
   Linking,
   Animated,
   Platform,
+  ScrollView,
 } from "react-native";
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "expo-router";
@@ -23,8 +24,20 @@ import { speakInstruction, stopSpeech } from "@/lib/speech";
 import { analyzeEmergency } from "@/lib/ai-analysis";
 import { sendEmergencySMS } from "@/lib/family-sms";
 import { useAppContext } from "@/lib/app-context";
+import {
+  parseAndExecute,
+  MOCK_SCENARIOS,
+  type EScript,
+} from "@/lib/EScriptEngine";
+import { EScriptRenderer } from "@/components/escripts/EScriptRenderer";
 
 type SOSState = "idle" | "listening" | "processing" | "response";
+
+// Conversation message for chat fallback
+interface ChatMessage {
+  role: "ai" | "user";
+  text: string;
+}
 
 export default function SOSScreen() {
   useKeepAwake();
@@ -34,6 +47,9 @@ export default function SOSScreen() {
   const [sosState, setSosState] = useState<SOSState>("idle");
   const [statusText, setStatusText] = useState("Press and speak");
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [activeScript, setActiveScript] = useState<EScript | null>(null);
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [showMockMenu, setShowMockMenu] = useState(false);
 
   // Animations
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -159,29 +175,81 @@ export default function SOSScreen() {
     }
   };
 
+  /**
+   * Core processing: sends transcript to AI, tries to parse as EScript.
+   * If EScript is valid → render agentic UI.
+   * If EScript fails → fall back to classic text response + navigate to Panic Mode.
+   */
   const processTranscript = async (transcript: string) => {
     try {
+      // Add user message to chat history
+      setChatHistory((prev) => [...prev, { role: "user", text: transcript }]);
+
       const result = await analyzeEmergency(transcript);
       setSosState("response");
-      setStatusText(result.spokenResponse);
-      speakInstruction(result.spokenResponse, { panicMode: panicDetected });
-      if (result.severity === "critical") haptic.error();
-      else haptic.success();
 
-      const actions: Promise<unknown>[] = [];
-      if (result.shouldSMSFamily) actions.push(sendEmergencySMS());
-      if (result.shouldCall103) actions.push(Linking.openURL("tel:103"));
-      await Promise.allSettled(actions);
+      // Try to parse AI response as an EScript
+      const engineResult = parseAndExecute(JSON.stringify(result));
 
-      const targetType = result.emergencyType !== "unknown" ? result.emergencyType : "injury";
-      setTimeout(() => {
-        stopSpeech();
-        router.push(`/panic?type=${targetType}`);
-      }, 2500);
+      if (engineResult.success) {
+        // Agentic UI mode — hide chat, render EScript component
+        speakInstruction(engineResult.script.voice_backup, { panicMode: panicDetected });
+        setActiveScript(engineResult.script);
+      } else {
+        // Fallback: classic text response
+        const responseText = result.spokenResponse;
+        setStatusText(responseText);
+        setChatHistory((prev) => [...prev, { role: "ai", text: responseText }]);
+        speakInstruction(responseText, { panicMode: panicDetected });
+
+        if (result.severity === "critical") haptic.error();
+        else haptic.success();
+
+        const actions: Promise<unknown>[] = [];
+        if (result.shouldSMSFamily) actions.push(sendEmergencySMS());
+        if (result.shouldCall103) actions.push(Linking.openURL("tel:103"));
+        await Promise.allSettled(actions);
+
+        const targetType = result.emergencyType !== "unknown" ? result.emergencyType : "injury";
+        setTimeout(() => {
+          stopSpeech();
+          router.push(`/panic?type=${targetType}`);
+        }, 2500);
+      }
     } catch {
       setErrorText("AI failed — select type manually");
       setSosState("idle");
       setStatusText("Press and speak");
+    }
+  };
+
+  /** Called when user completes an EScript action — feed result back to AI */
+  const handleScriptComplete = (context: string) => {
+    setActiveScript(null);
+    setSosState("processing");
+    setStatusText("Processing…");
+    setChatHistory((prev) => [...prev, { role: "user", text: context }]);
+    processTranscript(context);
+  };
+
+  /** Called when user dismisses the EScript UI */
+  const handleScriptDismiss = () => {
+    setActiveScript(null);
+    setSosState("idle");
+    setStatusText("Press and speak");
+  };
+
+  /** Load a mock scenario for demo purposes */
+  const handleMockScenario = (key: string) => {
+    setShowMockMenu(false);
+    haptic.medium();
+    const raw = MOCK_SCENARIOS[key];
+    if (!raw) return;
+    const result = parseAndExecute(raw);
+    if (result.success) {
+      speakInstruction(result.script.voice_backup, { panicMode: panicDetected });
+      setActiveScript(result.script);
+      setSosState("response");
     }
   };
 
@@ -190,6 +258,41 @@ export default function SOSScreen() {
     audioRecorder.stop().catch(() => {});
     router.back();
   };
+
+  // ── If an EScript is active, render agentic UI (full screen, OLED black) ──
+  if (activeScript) {
+    return (
+      <EScriptRenderer
+        script={activeScript}
+        onComplete={handleScriptComplete}
+        onDismiss={handleScriptDismiss}
+      />
+    );
+  }
+
+  // ── Mock demo menu overlay ─────────────────────────────────────────────────
+  if (showMockMenu) {
+    return (
+      <ScreenContainer containerClassName="bg-background" edges={["top", "left", "right", "bottom"]}>
+        <View style={styles.mockMenuContainer}>
+          <Text style={styles.mockMenuTitle}>🧪 Demo Mode</Text>
+          <Text style={styles.mockMenuSubtitle}>Select a mock scenario to test</Text>
+          {Object.keys(MOCK_SCENARIOS).map((key) => (
+            <Pressable
+              key={key}
+              onPress={() => handleMockScenario(key)}
+              style={({ pressed }) => [styles.mockBtn, pressed && { opacity: 0.8 }]}
+            >
+              <Text style={styles.mockBtnText}>{MOCK_LABELS[key] ?? key}</Text>
+            </Pressable>
+          ))}
+          <Pressable onPress={() => setShowMockMenu(false)} style={styles.mockCancelBtn}>
+            <Text style={styles.mockCancelText}>Cancel</Text>
+          </Pressable>
+        </View>
+      </ScreenContainer>
+    );
+  }
 
   const circleColor =
     sosState === "listening" ? "#4a9d9c"
@@ -206,16 +309,18 @@ export default function SOSScreen() {
     <ScreenContainer containerClassName="bg-background" edges={["top", "left", "right", "bottom"]}>
       <View style={styles.container}>
 
-        {/* Minimal header: back + title only */}
+        {/* Header: back + title + demo button */}
         <View style={styles.header}>
           <Pressable onPress={handleBack} style={styles.backBtn}>
             <Text style={styles.backText}>← Back</Text>
           </Pressable>
           <Text style={styles.title}>VOICE SOS</Text>
-          <View style={{ width: 60 }} />
+          <Pressable onPress={() => setShowMockMenu(true)} style={styles.demoBtn}>
+            <Text style={styles.demoBtnText}>Demo</Text>
+          </Pressable>
         </View>
 
-        {/* Central circle — dominant */}
+        {/* Central circle */}
         <View style={styles.circleWrap}>
           {sosState === "idle" && animationsEnabled && (
             <Animated.View
@@ -249,20 +354,40 @@ export default function SOSScreen() {
           </Pressable>
         </View>
 
-        {/* Status — large, readable */}
+        {/* Status */}
         <Text style={[styles.status, panicDetected && styles.statusLarge]}>
           {statusText}
         </Text>
 
-        {/* Error — only if present */}
-        {errorText && (
-          <Text style={styles.error}>⚠ {errorText}</Text>
+        {/* Error */}
+        {errorText && <Text style={styles.error}>⚠ {errorText}</Text>}
+
+        {/* Chat history — shows previous AI/user exchanges */}
+        {chatHistory.length > 0 && (
+          <ScrollView
+            style={styles.chatScroll}
+            contentContainerStyle={styles.chatContent}
+            showsVerticalScrollIndicator={false}
+          >
+            {chatHistory.map((msg, i) => (
+              <View
+                key={i}
+                style={[
+                  styles.chatBubble,
+                  msg.role === "ai" ? styles.aiBubble : styles.userBubble,
+                ]}
+              >
+                <Text style={[styles.chatText, msg.role === "user" && styles.userText]}>
+                  {msg.text}
+                </Text>
+              </View>
+            ))}
+          </ScrollView>
         )}
 
-        {/* Spacer */}
         <View style={{ flex: 1 }} />
 
-        {/* Call 103 — always at bottom */}
+        {/* Call 103 */}
         <Pressable
           onPress={() => Linking.openURL("tel:103")}
           style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
@@ -275,6 +400,13 @@ export default function SOSScreen() {
   );
 }
 
+const MOCK_LABELS: Record<string, string> = {
+  poll_critical:     "🔴 Poll — Critical diagnosis",
+  scheme_tourniquet: "🩹 Scheme — Tourniquet steps",
+  countdown_sos:     "⏱ Countdown — SOS in 30s",
+  hardware_flash:    "🔦 Hardware — SOS Flash",
+};
+
 const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: 20, paddingTop: 6, paddingBottom: 12 },
   header: {
@@ -286,6 +418,17 @@ const styles = StyleSheet.create({
   backBtn: { paddingVertical: 8, paddingRight: 8, minWidth: 60 },
   backText: { fontSize: 16, color: "#4a9d9c", fontWeight: "600" },
   title: { fontSize: 20, fontWeight: "800", color: "#FFFFFF", letterSpacing: 2 },
+  demoBtn: {
+    backgroundColor: "#1d2e3d",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: "#354656",
+    minWidth: 60,
+    alignItems: "center",
+  },
+  demoBtnText: { fontSize: 13, color: "#4a9d9c", fontWeight: "700" },
   circleWrap: {
     flex: 1,
     justifyContent: "center",
@@ -341,6 +484,35 @@ const styles = StyleSheet.create({
     marginTop: 8,
     paddingHorizontal: 16,
   },
+  chatScroll: {
+    maxHeight: 160,
+    marginTop: 12,
+  },
+  chatContent: { gap: 8, paddingBottom: 4 },
+  chatBubble: {
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    maxWidth: "90%",
+  },
+  aiBubble: {
+    backgroundColor: "#1d2e3d",
+    alignSelf: "flex-start",
+    borderWidth: 1,
+    borderColor: "#354656",
+  },
+  userBubble: {
+    backgroundColor: "#4a9d9c20",
+    alignSelf: "flex-end",
+    borderWidth: 1,
+    borderColor: "#4a9d9c60",
+  },
+  chatText: {
+    fontSize: 14,
+    color: "#E0E0E0",
+    lineHeight: 20,
+  },
+  userText: { color: "#FFFFFF" },
   callBar: {
     backgroundColor: "#22C55E",
     borderRadius: 14,
@@ -348,4 +520,25 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   callText: { fontSize: 20, fontWeight: "800", color: "#FFFFFF", letterSpacing: 1 },
+  // Mock menu
+  mockMenuContainer: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 20,
+    gap: 12,
+  },
+  mockMenuTitle: { fontSize: 26, fontWeight: "900", color: "#FFFFFF", marginBottom: 4 },
+  mockMenuSubtitle: { fontSize: 15, color: "#9BA1A6", marginBottom: 8 },
+  mockBtn: {
+    backgroundColor: "#1d2e3d",
+    borderRadius: 14,
+    paddingVertical: 20,
+    paddingHorizontal: 18,
+    borderWidth: 1,
+    borderColor: "#354656",
+  },
+  mockBtnText: { fontSize: 17, fontWeight: "700", color: "#FFFFFF" },
+  mockCancelBtn: { paddingVertical: 14, alignItems: "center" },
+  mockCancelText: { fontSize: 16, color: "#687076", fontWeight: "600" },
 });

@@ -84,3 +84,16 @@
 - [x] Training: simplify card list, remove tag/step count clutter
 - [x] Settings: remove About section and Voice AI info card
 - [x] Settings: keep only family number input + TTS toggle + haptics toggle
+
+## E-Script Engine (v1.4)
+
+- [x] Create EScriptEngine.ts service with parseAndExecute, types, and 4 mock scenarios
+- [x] Build PollComponent (UI_RENDER_POLL) — large buttons, danger-level neon borders
+- [x] Build SchemeComponent (UI_SHOW_SCHEME) — step card with Next/Back, animated transitions
+- [x] Build CountdownComponent (COUNTER_TIMEOUT) — full-screen timer, on_expire_action
+- [x] Build HardwareBridge (HARDWARE_TRIGGER) — flashlight Morse SOS, vibration pulse, audio alarm
+- [x] Build EScriptRenderer — UI State Manager switching between chat and agentic UI
+- [x] Integrate E-Script Engine into SOS screen with OLED-black background
+- [x] Wire mock demo mode (4 scenarios accessible without live AI)
+- [x] TypeScript check passes
+- [x] All mock scenarios render correctly
