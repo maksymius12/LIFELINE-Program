@@ -61,7 +61,7 @@ The core of LIFELINE. Press SOS, speak your emergency, and the AI responds like 
 | Text fallback | Type your emergency if voice is unavailable |
 | TTS | Every AI response is spoken aloud via `expo-speech` |
 | SMS + GPS | Automatically sends your location to a saved family contact |
-| Call 103 | One-tap emergency services button always visible |
+| Call 112 | One-tap emergency services button always visible |
 
 ### E-Script Engine — Agentic UI
 
@@ -186,7 +186,7 @@ After each AI instruction, the user can respond by voice without touching the sc
 | "Repeat" / "Повтори" | Repeat current instruction |
 | "Can't" / "Не можу" | Request alternative from AI |
 | "Go back" / "Назад" | Return to previous screen |
-| "Call 103" / "Виклич" | Open emergency dialer |
+| "Call 112" / "Виклич" | Open emergency dialer |
 | "Yes" / "Так" | Confirm YES/NO question |
 | "No" / "Ні" | Deny YES/NO question |
 
