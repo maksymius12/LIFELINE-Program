@@ -33,27 +33,21 @@ export default function PanicScreen() {
   const [altInstruction, setAltInstruction] = useState<string | null>(null);
   const [loadingAlt, setLoadingAlt] = useState(false);
 
-  // Animated dot scale for active step
   const dotAnims = useRef(steps.map(() => new Animated.Value(1))).current;
 
   useEffect(() => {
     if (!animationsEnabled || completed) return;
     Animated.spring(dotAnims[currentStep], {
-      toValue: 1.4,
+      toValue: 1.5,
       useNativeDriver: true,
       damping: 10,
     }).start();
-    return () => {
-      dotAnims[currentStep].setValue(1);
-    };
+    return () => { dotAnims[currentStep].setValue(1); };
   }, [currentStep, completed, animationsEnabled]);
 
-  // TTS: auto-read instruction on step change
   useEffect(() => {
     if (completed) {
-      speakInstruction("You did great. Stay calm. Help is on the way.", {
-        panicMode: panicDetected,
-      });
+      speakInstruction("You did great. Stay calm.", { panicMode: panicDetected });
       return;
     }
     const text = altInstruction ?? steps[currentStep]?.instruction;
@@ -91,35 +85,22 @@ export default function PanicScreen() {
   const handleCall = () => Linking.openURL("tel:103");
   const handleBack = () => { stopSpeech(); router.back(); };
 
-  const fontSize = panicDetected ? 28 : 26;
-
   // ── Completion screen ──────────────────────────────────────────────────────
   if (completed) {
     return (
-      <ScreenContainer
-        containerClassName="bg-background"
-        edges={["top", "left", "right", "bottom"]}
-      >
-        <View style={styles.completionContainer}>
-          <View style={styles.completionCard}>
-            <Text style={styles.completionEmoji}>✅</Text>
-            <Text style={styles.completionTitle}>You did great.</Text>
-            <Text style={styles.completionSubtitle}>Stay calm. Help is on the way.</Text>
-            <Text style={styles.completionHint}>
-              All {steps.length} steps completed for {scenario.title}
-            </Text>
-          </View>
+      <ScreenContainer containerClassName="bg-background" edges={["top", "left", "right", "bottom"]}>
+        <View style={styles.completionWrap}>
+          <Text style={styles.completionEmoji}>✅</Text>
+          <Text style={styles.completionTitle}>You did great.</Text>
+          <Text style={styles.completionSub}>Stay calm. Help is on the way.</Text>
           <Pressable
             onPress={handleCall}
             style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
           >
-            <Text style={styles.callText}>📞 Call 103</Text>
+            <Text style={styles.callText}>📞  Call 103</Text>
           </Pressable>
-          <Pressable
-            onPress={handleBack}
-            style={({ pressed }) => [styles.backBarBtn, pressed && { opacity: 0.7 }]}
-          >
-            <Text style={styles.backBarText}>← Back to Home</Text>
+          <Pressable onPress={handleBack} style={styles.backLink}>
+            <Text style={styles.backLinkText}>← Back to Home</Text>
           </Pressable>
         </View>
       </ScreenContainer>
@@ -127,94 +108,71 @@ export default function PanicScreen() {
   }
 
   // ── Step screen ────────────────────────────────────────────────────────────
+  const instructionFontSize = panicDetected ? 30 : 28;
+
   return (
-    <ScreenContainer
-      containerClassName="bg-background"
-      edges={["top", "left", "right", "bottom"]}
-    >
+    <ScreenContainer containerClassName="bg-background" edges={["top", "left", "right", "bottom"]}>
       <View style={styles.container}>
-        {/* Header */}
+
+        {/* Minimal header: back + type label */}
         <View style={styles.header}>
           <Pressable onPress={handleBack} style={styles.backBtn}>
             <Text style={styles.backBtnText}>←</Text>
           </Pressable>
-          <View
-            style={[
-              styles.typeBadge,
-              {
-                backgroundColor: scenario.color + "30",
-                borderColor: scenario.color,
-              },
-            ]}
-          >
-            <Text style={[styles.typeBadgeText, { color: scenario.color }]}>
-              {isTraining ? "🎯 TRAINING" : scenario.title}
-            </Text>
-          </View>
-          <Text style={styles.stepCounter}>
-            {currentStep + 1} / {steps.length}
+          <Text style={[styles.typeLabel, { color: scenario.color }]}>
+            {isTraining ? "🎯 TRAINING" : scenario.title}
           </Text>
+          <Text style={styles.stepNum}>{currentStep + 1}/{steps.length}</Text>
         </View>
 
-        {/* Progress dots */}
+        {/* Progress dots — small, unobtrusive */}
         <View style={styles.dotsRow}>
           {steps.map((_, i) => (
             <Animated.View
               key={i}
               style={[
                 styles.dot,
-                i < currentStep
-                  ? styles.dotDone
-                  : i === currentStep
-                  ? styles.dotActive
+                i < currentStep ? styles.dotDone
+                  : i === currentStep ? styles.dotActive
                   : styles.dotPending,
-                i === currentStep &&
-                  animationsEnabled && {
-                    transform: [{ scale: dotAnims[i] }],
-                  },
+                i === currentStep && animationsEnabled && { transform: [{ scale: dotAnims[i] }] },
               ]}
             />
           ))}
         </View>
 
-        {/* Step card */}
-        <View style={styles.stepCard}>
-          <Text style={styles.stepEmoji}>{steps[currentStep]?.emoji}</Text>
-          <Text style={[styles.stepInstruction, { fontSize, lineHeight: fontSize * 1.35 }]}>
+        {/* Instruction card — fills most of the screen */}
+        <View style={styles.card}>
+          <Text style={styles.emoji}>{steps[currentStep]?.emoji}</Text>
+          <Text style={[styles.instruction, { fontSize: instructionFontSize, lineHeight: instructionFontSize * 1.35 }]}>
             {altInstruction ?? steps[currentStep]?.instruction}
           </Text>
           {altInstruction && (
-            <View style={styles.altBadge}>
-              <Text style={styles.altBadgeText}>🔄 Alternative instruction</Text>
-            </View>
+            <Text style={styles.altLabel}>🔄 Alternative</Text>
           )}
         </View>
 
-        {/* DONE */}
+        {/* DONE — giant, full-width */}
         <Pressable
           onPress={handleDone}
           style={({ pressed }) => [
             styles.doneBtn,
             pressed && { transform: [{ scale: 0.97 }], opacity: 0.9 },
-            panicDetected && styles.doneBtnLarge,
           ]}
         >
-          <Text style={[styles.doneBtnText, panicDetected && { fontSize: 22 }]}>
-            ✓ DONE
-          </Text>
+          <Text style={styles.doneBtnText}>✓  DONE</Text>
         </Pressable>
 
-        {/* Can't do it */}
+        {/* Can't do it — secondary, smaller */}
         <Pressable
           onPress={handleCantDo}
           disabled={loadingAlt}
           style={({ pressed }) => [styles.cantBtn, pressed && { opacity: 0.7 }]}
         >
-          {loadingAlt ? (
-            <ActivityIndicator size="small" color="#4a9d9c" />
-          ) : (
-            <Text style={styles.cantBtnText}>❓ Can't do it — show alternative</Text>
-          )}
+          {loadingAlt
+            ? <ActivityIndicator size="small" color="#4a9d9c" />
+            : <Text style={styles.cantBtnText}>Can't do it</Text>
+          }
         </Pressable>
 
         {/* Call 103 */}
@@ -222,123 +180,79 @@ export default function PanicScreen() {
           onPress={handleCall}
           style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
         >
-          <Text style={styles.callText}>📞 Call 103</Text>
+          <Text style={styles.callText}>📞  Call 103</Text>
         </Pressable>
+
       </View>
     </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12 },
+  container: { flex: 1, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 10 },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 16,
+    marginBottom: 8,
   },
-  backBtn: { paddingVertical: 4, paddingRight: 8 },
-  backBtnText: { fontSize: 22, color: "#4a9d9c", fontWeight: "700" },
-  typeBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 10,
-    borderWidth: 1,
-  },
-  typeBadgeText: { fontSize: 13, fontWeight: "700" },
-  stepCounter: { fontSize: 14, color: "#e0e0e0", fontWeight: "600" },
-  dotsRow: {
-    flexDirection: "row",
-    justifyContent: "center",
-    gap: 10,
-    marginBottom: 20,
-  },
+  backBtn: { paddingVertical: 6, paddingRight: 10, minWidth: 36 },
+  backBtnText: { fontSize: 24, color: "#4a9d9c", fontWeight: "700" },
+  typeLabel: { fontSize: 15, fontWeight: "800", letterSpacing: 0.5 },
+  stepNum: { fontSize: 15, color: "#e0e0e0", fontWeight: "700", minWidth: 36, textAlign: "right" },
+  dotsRow: { flexDirection: "row", justifyContent: "center", gap: 10, marginBottom: 12 },
   dot: { width: 12, height: 12, borderRadius: 6 },
   dotDone: { backgroundColor: "#22C55E" },
   dotActive: { backgroundColor: "#FF3D3D" },
   dotPending: { backgroundColor: "#354656" },
-  stepCard: {
+  card: {
     flex: 1,
     backgroundColor: "#1d2e3d",
     borderRadius: 20,
-    padding: 28,
+    paddingHorizontal: 24,
+    paddingVertical: 28,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
     borderColor: "#354656",
-    marginBottom: 16,
+    marginBottom: 12,
   },
-  stepEmoji: { fontSize: 72, marginBottom: 20 },
-  stepInstruction: { fontWeight: "800", color: "#FFFFFF", textAlign: "center" },
-  altBadge: {
-    marginTop: 14,
-    backgroundColor: "#4a9d9c30",
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderWidth: 1,
-    borderColor: "#4a9d9c",
-  },
-  altBadgeText: { fontSize: 12, color: "#4a9d9c", fontWeight: "600" },
+  emoji: { fontSize: 80, marginBottom: 20 },
+  instruction: { fontWeight: "800", color: "#FFFFFF", textAlign: "center" },
+  altLabel: { marginTop: 12, fontSize: 13, color: "#4a9d9c", fontWeight: "700" },
   doneBtn: {
+    backgroundColor: "#22C55E",
+    borderRadius: 16,
+    paddingVertical: 22,
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  doneBtnText: { fontSize: 22, fontWeight: "900", color: "#FFFFFF", letterSpacing: 2 },
+  cantBtn: {
+    paddingVertical: 14,
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  cantBtnText: { fontSize: 15, color: "#4a9d9c", fontWeight: "600" },
+  callBar: {
     backgroundColor: "#22C55E",
     borderRadius: 14,
     paddingVertical: 18,
     alignItems: "center",
-    marginBottom: 10,
   },
-  doneBtnLarge: { paddingVertical: 22 },
-  doneBtnText: { fontSize: 18, fontWeight: "900", color: "#FFFFFF", letterSpacing: 2 },
-  cantBtn: {
-    backgroundColor: "#1d2e3d",
-    borderRadius: 10,
-    paddingVertical: 12,
-    alignItems: "center",
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: "#354656",
-  },
-  cantBtnText: { fontSize: 14, color: "#4a9d9c", fontWeight: "600" },
-  callBar: {
-    backgroundColor: "#FF3D3D",
-    borderRadius: 10,
-    paddingVertical: 14,
-    alignItems: "center",
-  },
-  callText: { fontSize: 16, fontWeight: "700", color: "#FFFFFF" },
+  callText: { fontSize: 20, fontWeight: "800", color: "#FFFFFF", letterSpacing: 1 },
   // Completion
-  completionContainer: {
+  completionWrap: {
     flex: 1,
-    paddingHorizontal: 20,
-    paddingTop: 40,
-    paddingBottom: 20,
-  },
-  completionCard: {
-    flex: 1,
-    backgroundColor: "#22C55E20",
-    borderRadius: 24,
-    padding: 32,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "#22C55E",
-    marginBottom: 20,
+    paddingHorizontal: 24,
+    paddingBottom: 20,
+    gap: 16,
   },
-  completionEmoji: { fontSize: 80, marginBottom: 20 },
-  completionTitle: {
-    fontSize: 32,
-    fontWeight: "900",
-    color: "#22C55E",
-    marginBottom: 10,
-  },
-  completionSubtitle: {
-    fontSize: 20,
-    color: "#FFFFFF",
-    fontWeight: "600",
-    textAlign: "center",
-    marginBottom: 14,
-  },
-  completionHint: { fontSize: 14, color: "#e0e0e0", textAlign: "center" },
-  backBarBtn: { paddingVertical: 12, alignItems: "center", marginTop: 8 },
-  backBarText: { fontSize: 14, color: "#4a9d9c", fontWeight: "600" },
+  completionEmoji: { fontSize: 80 },
+  completionTitle: { fontSize: 36, fontWeight: "900", color: "#22C55E", textAlign: "center" },
+  completionSub: { fontSize: 18, color: "#e0e0e0", textAlign: "center", lineHeight: 26 },
+  backLink: { paddingVertical: 10 },
+  backLinkText: { fontSize: 15, color: "#4a9d9c", fontWeight: "600" },
 });

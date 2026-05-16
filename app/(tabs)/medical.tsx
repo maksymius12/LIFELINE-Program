@@ -4,7 +4,6 @@ import {
   Pressable,
   StyleSheet,
   Linking,
-  ScrollView,
 } from "react-native";
 import { useState, useEffect, useRef } from "react";
 import { useKeepAwake } from "expo-keep-awake";
@@ -34,7 +33,6 @@ export default function MedicalScreen() {
 
   const currentNode = MEDICAL_TREE[nodeId];
 
-  // TTS for questions
   useEffect(() => {
     if (phase === "tree" && currentNode?.question) {
       speakInstruction(currentNode.question, { panicMode: panicDetected });
@@ -42,7 +40,6 @@ export default function MedicalScreen() {
     return () => stopSpeech();
   }, [nodeId, phase, panicDetected]);
 
-  // TTS + timer for protocol steps
   useEffect(() => {
     if (phase !== "protocol") return;
     const step = protocol[protocolStep];
@@ -58,7 +55,6 @@ export default function MedicalScreen() {
     return () => stopSpeech();
   }, [protocolStep, phase, panicDetected]);
 
-  // Countdown
   useEffect(() => {
     if (!timerRunning) return;
     timerRef.current = setInterval(() => {
@@ -87,9 +83,7 @@ export default function MedicalScreen() {
       setProtocolStep(0);
       setPhase("protocol");
       haptic.error();
-      speakInstruction(`Diagnosis: ${nextNode.diagnosis}. Follow these steps.`, {
-        panicMode: panicDetected,
-      });
+      speakInstruction(`${nextNode.diagnosis}. Follow these steps.`, { panicMode: panicDetected });
     } else {
       setNodeId(nextId);
     }
@@ -103,9 +97,7 @@ export default function MedicalScreen() {
       setProtocolStep((prev) => prev + 1);
     } else {
       setPhase("done");
-      speakInstruction("All steps completed. Stay calm. Help is on the way.", {
-        panicMode: panicDetected,
-      });
+      speakInstruction("All steps completed. Stay calm.", { panicMode: panicDetected });
     }
   };
 
@@ -128,30 +120,27 @@ export default function MedicalScreen() {
     return `${m}:${(s % 60).toString().padStart(2, "0")}`;
   };
 
-  const qFontSize = panicDetected ? 22 : 19;
-  const sFontSize = panicDetected ? 24 : 20;
+  const qFontSize = panicDetected ? 26 : 22;
+  const sFontSize = panicDetected ? 28 : 24;
 
   // ── Done ──────────────────────────────────────────────────────────────────
   if (phase === "done") {
     return (
       <ScreenContainer containerClassName="bg-background">
-        <ScrollView contentContainerStyle={styles.doneContainer}>
+        <View style={styles.doneWrap}>
           <Text style={styles.doneEmoji}>✅</Text>
-          <Text style={styles.doneTitle}>All steps completed.</Text>
-          <Text style={styles.doneSubtitle}>Stay calm. Help is on the way.</Text>
+          <Text style={styles.doneTitle}>All steps done.</Text>
+          <Text style={styles.doneSub}>Stay calm. Help is on the way.</Text>
           <Pressable
             onPress={handleCall}
             style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
           >
-            <Text style={styles.callText}>📞 Call 103</Text>
+            <Text style={styles.callText}>📞  Call 103</Text>
           </Pressable>
-          <Pressable
-            onPress={handleReset}
-            style={({ pressed }) => [styles.resetBtn, pressed && { opacity: 0.7 }]}
-          >
+          <Pressable onPress={handleReset} style={styles.resetBtn}>
             <Text style={styles.resetText}>↺ New Assessment</Text>
           </Pressable>
-        </ScrollView>
+        </View>
       </ScreenContainer>
     );
   }
@@ -162,33 +151,31 @@ export default function MedicalScreen() {
     return (
       <ScreenContainer containerClassName="bg-background">
         <View style={styles.container}>
+          {/* Diagnosis label — compact */}
           <View style={styles.diagnosisBanner}>
-            <Text style={styles.diagnosisLabel}>DIAGNOSIS</Text>
             <Text style={styles.diagnosisText}>{diagnosis}</Text>
+            <Text style={styles.stepNum}>{protocolStep + 1}/{protocol.length}</Text>
           </View>
-          <View style={styles.stepHeader}>
-            <Text style={styles.stepCounter}>
-              Step {protocolStep + 1} / {protocol.length}
-            </Text>
-            <View style={styles.dotsRow}>
-              {protocol.map((_, i) => (
-                <View
-                  key={i}
-                  style={[
-                    styles.dot,
-                    i < protocolStep
-                      ? styles.dotDone
-                      : i === protocolStep
-                      ? styles.dotActive
-                      : styles.dotPending,
-                  ]}
-                />
-              ))}
-            </View>
+
+          {/* Progress dots */}
+          <View style={styles.dotsRow}>
+            {protocol.map((_, i) => (
+              <View
+                key={i}
+                style={[
+                  styles.dot,
+                  i < protocolStep ? styles.dotDone
+                    : i === protocolStep ? styles.dotActive
+                    : styles.dotPending,
+                ]}
+              />
+            ))}
           </View>
-          <View style={styles.stepCard}>
-            <Text style={styles.stepEmoji}>{step?.emoji}</Text>
-            <Text style={[styles.stepInstruction, { fontSize: sFontSize, lineHeight: sFontSize * 1.4 }]}>
+
+          {/* Step card — fills screen */}
+          <View style={styles.card}>
+            <Text style={styles.cardEmoji}>{step?.emoji}</Text>
+            <Text style={[styles.cardInstruction, { fontSize: sFontSize, lineHeight: sFontSize * 1.35 }]}>
               {step?.instruction}
             </Text>
             {step?.timerSeconds && step.timerSeconds > 0 ? (
@@ -200,23 +187,20 @@ export default function MedicalScreen() {
               </View>
             ) : null}
           </View>
+
+          {/* DONE — giant */}
           <Pressable
             onPress={handleProtocolDone}
-            style={({ pressed }) => [
-              styles.doneBtn,
-              pressed && { transform: [{ scale: 0.97 }], opacity: 0.9 },
-              panicDetected && styles.doneBtnLarge,
-            ]}
+            style={({ pressed }) => [styles.doneBtn, pressed && { transform: [{ scale: 0.97 }], opacity: 0.9 }]}
           >
-            <Text style={[styles.doneBtnText, panicDetected && { fontSize: 22 }]}>
-              ✓ DONE
-            </Text>
+            <Text style={styles.doneBtnText}>✓  DONE</Text>
           </Pressable>
+
           <Pressable
             onPress={handleCall}
             style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
           >
-            <Text style={styles.callText}>📞 Call 103</Text>
+            <Text style={styles.callText}>📞  Call 103</Text>
           </Pressable>
         </View>
       </ScreenContainer>
@@ -227,57 +211,36 @@ export default function MedicalScreen() {
   return (
     <ScreenContainer containerClassName="bg-background">
       <View style={styles.container}>
-        <View style={styles.treeHeader}>
-          <Text style={styles.treeTitle}>🏥 Medical AI</Text>
-          <View style={styles.treeBadge}>
-            <Text style={styles.treeBadgeText}>● OFFLINE</Text>
-          </View>
-        </View>
-        <Text style={styles.treeSubtitle}>
-          Answer YES or NO to identify the emergency.
-        </Text>
-        <View style={styles.questionCard}>
-          <Text style={styles.questionEmoji}>❓</Text>
-          <Text style={[styles.questionText, { fontSize: qFontSize, lineHeight: qFontSize * 1.45 }]}>
+        {/* Screen title — minimal */}
+        <Text style={styles.screenTitle}>🏥 Medical AI</Text>
+
+        {/* Question card — fills most of screen */}
+        <View style={styles.card}>
+          <Text style={styles.cardEmoji}>❓</Text>
+          <Text style={[styles.cardInstruction, { fontSize: qFontSize, lineHeight: qFontSize * 1.45 }]}>
             {currentNode?.question}
           </Text>
         </View>
-        <View style={styles.answerRow}>
-          <Pressable
-            onPress={() => handleAnswer("yes")}
-            style={({ pressed }) => [
-              styles.yesBtn,
-              pressed && { transform: [{ scale: 0.97 }], opacity: 0.9 },
-              panicDetected && styles.answerBtnLarge,
-            ]}
-          >
-            <Text style={[styles.yesBtnText, panicDetected && { fontSize: 22 }]}>
-              ✓ YES
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => handleAnswer("no")}
-            style={({ pressed }) => [
-              styles.noBtn,
-              pressed && { transform: [{ scale: 0.97 }], opacity: 0.9 },
-              panicDetected && styles.answerBtnLarge,
-            ]}
-          >
-            <Text style={[styles.noBtnText, panicDetected && { fontSize: 22 }]}>
-              ✗ NO
-            </Text>
-          </Pressable>
-        </View>
-        <View style={styles.hintCard}>
-          <Text style={styles.hintText}>
-            🤖 AI will identify the diagnosis and guide you step by step.
-          </Text>
-        </View>
+
+        {/* YES / NO — full-width, stacked, giant */}
+        <Pressable
+          onPress={() => handleAnswer("yes")}
+          style={({ pressed }) => [styles.yesBtn, pressed && { transform: [{ scale: 0.97 }], opacity: 0.9 }]}
+        >
+          <Text style={styles.yesBtnText}>✓  YES</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => handleAnswer("no")}
+          style={({ pressed }) => [styles.noBtn, pressed && { transform: [{ scale: 0.97 }], opacity: 0.9 }]}
+        >
+          <Text style={styles.noBtnText}>✗  NO</Text>
+        </Pressable>
+
         <Pressable
           onPress={handleCall}
           style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
         >
-          <Text style={styles.callText}>📞 Call 103</Text>
+          <Text style={styles.callText}>📞  Call 103</Text>
         </Pressable>
       </View>
     </ScreenContainer>
@@ -285,153 +248,92 @@ export default function MedicalScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12 },
-  treeHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 6,
-  },
-  treeTitle: { fontSize: 22, fontWeight: "800", color: "#FFFFFF" },
-  treeBadge: {
-    backgroundColor: "#0D6E6E",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  treeBadgeText: { color: "#afffff", fontSize: 11, fontWeight: "700" },
-  treeSubtitle: { fontSize: 14, color: "#e0e0e0", marginBottom: 20 },
-  questionCard: {
+  container: { flex: 1, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 10 },
+  screenTitle: { fontSize: 22, fontWeight: "800", color: "#FFFFFF", marginBottom: 12 },
+  card: {
     flex: 1,
     backgroundColor: "#1d2e3d",
     borderRadius: 20,
-    padding: 28,
+    paddingHorizontal: 24,
+    paddingVertical: 28,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
     borderColor: "#354656",
-    marginBottom: 20,
-  },
-  questionEmoji: { fontSize: 56, marginBottom: 16 },
-  questionText: { fontWeight: "800", color: "#FFFFFF", textAlign: "center" },
-  answerRow: { flexDirection: "row", gap: 12, marginBottom: 12 },
-  yesBtn: {
-    flex: 1,
-    backgroundColor: "#22C55E",
-    borderRadius: 14,
-    paddingVertical: 18,
-    alignItems: "center",
-  },
-  yesBtnText: { fontSize: 18, fontWeight: "900", color: "#FFFFFF" },
-  noBtn: {
-    flex: 1,
-    backgroundColor: "#FF3D3D",
-    borderRadius: 14,
-    paddingVertical: 18,
-    alignItems: "center",
-  },
-  noBtnText: { fontSize: 18, fontWeight: "900", color: "#FFFFFF" },
-  answerBtnLarge: { paddingVertical: 22 },
-  hintCard: {
-    backgroundColor: "#0D6E6E20",
-    borderRadius: 10,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: "#0D6E6E",
     marginBottom: 12,
   },
-  hintText: { fontSize: 13, color: "#afffff", textAlign: "center" },
-  // Protocol
-  diagnosisBanner: {
-    backgroundColor: "#FF3D3D20",
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: "#FF3D3D",
-    marginBottom: 14,
-    alignItems: "center",
-  },
-  diagnosisLabel: {
-    fontSize: 11,
-    color: "#FF3D3D",
-    fontWeight: "700",
-    letterSpacing: 2,
-    marginBottom: 4,
-  },
-  diagnosisText: { fontSize: 18, fontWeight: "900", color: "#FFFFFF" },
-  stepHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 12,
-  },
-  stepCounter: { fontSize: 13, color: "#e0e0e0", fontWeight: "600" },
-  dotsRow: { flexDirection: "row", gap: 8 },
-  dot: { width: 10, height: 10, borderRadius: 5 },
-  dotDone: { backgroundColor: "#22C55E" },
-  dotActive: { backgroundColor: "#FF3D3D" },
-  dotPending: { backgroundColor: "#354656" },
-  stepCard: {
-    flex: 1,
-    backgroundColor: "#1d2e3d",
-    borderRadius: 20,
-    padding: 24,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#354656",
-    marginBottom: 14,
-  },
-  stepEmoji: { fontSize: 64, marginBottom: 16 },
-  stepInstruction: { fontWeight: "800", color: "#FFFFFF", textAlign: "center" },
+  cardEmoji: { fontSize: 64, marginBottom: 18 },
+  cardInstruction: { fontWeight: "800", color: "#FFFFFF", textAlign: "center" },
   timerBox: {
     marginTop: 20,
     backgroundColor: "#FF3D3D20",
     borderRadius: 12,
-    padding: 14,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#FF3D3D",
-    width: "100%",
+    borderColor: "#FF3D3D60",
   },
-  timerLabel: { fontSize: 12, color: "#FF3D3D", fontWeight: "600", marginBottom: 6 },
+  timerLabel: { fontSize: 13, color: "#e0e0e0", fontWeight: "600", marginBottom: 4 },
   timerValue: { fontSize: 36, fontWeight: "900", color: "#FF3D3D" },
   timerDone: { color: "#22C55E" },
+  yesBtn: {
+    backgroundColor: "#22C55E",
+    borderRadius: 16,
+    paddingVertical: 22,
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  yesBtnText: { fontSize: 22, fontWeight: "900", color: "#FFFFFF", letterSpacing: 2 },
+  noBtn: {
+    backgroundColor: "#FF3D3D",
+    borderRadius: 16,
+    paddingVertical: 22,
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  noBtnText: { fontSize: 22, fontWeight: "900", color: "#FFFFFF", letterSpacing: 2 },
   doneBtn: {
+    backgroundColor: "#22C55E",
+    borderRadius: 16,
+    paddingVertical: 22,
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  doneBtnText: { fontSize: 22, fontWeight: "900", color: "#FFFFFF", letterSpacing: 2 },
+  callBar: {
     backgroundColor: "#22C55E",
     borderRadius: 14,
     paddingVertical: 18,
     alignItems: "center",
-    marginBottom: 10,
   },
-  doneBtnLarge: { paddingVertical: 22 },
-  doneBtnText: { fontSize: 18, fontWeight: "900", color: "#FFFFFF", letterSpacing: 2 },
-  callBar: {
-    backgroundColor: "#FF3D3D",
-    borderRadius: 10,
-    paddingVertical: 14,
+  callText: { fontSize: 20, fontWeight: "800", color: "#FFFFFF", letterSpacing: 1 },
+  // Diagnosis protocol
+  diagnosisBanner: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
+    marginBottom: 8,
   },
-  callText: { fontSize: 16, fontWeight: "700", color: "#FFFFFF" },
+  diagnosisText: { fontSize: 16, fontWeight: "800", color: "#FF3D3D" },
+  stepNum: { fontSize: 15, color: "#e0e0e0", fontWeight: "700" },
+  dotsRow: { flexDirection: "row", justifyContent: "center", gap: 10, marginBottom: 12 },
+  dot: { width: 12, height: 12, borderRadius: 6 },
+  dotDone: { backgroundColor: "#22C55E" },
+  dotActive: { backgroundColor: "#FF3D3D" },
+  dotPending: { backgroundColor: "#354656" },
   // Done screen
-  doneContainer: {
+  doneWrap: {
     flex: 1,
-    padding: 24,
     alignItems: "center",
     justifyContent: "center",
+    paddingHorizontal: 24,
+    paddingBottom: 20,
     gap: 16,
   },
   doneEmoji: { fontSize: 80 },
-  doneTitle: { fontSize: 28, fontWeight: "900", color: "#22C55E" },
-  doneSubtitle: { fontSize: 16, color: "#e0e0e0", textAlign: "center" },
-  resetBtn: {
-    backgroundColor: "#1d2e3d",
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderWidth: 1,
-    borderColor: "#354656",
-    marginTop: 8,
-  },
-  resetText: { fontSize: 14, color: "#4a9d9c", fontWeight: "600" },
+  doneTitle: { fontSize: 34, fontWeight: "900", color: "#22C55E", textAlign: "center" },
+  doneSub: { fontSize: 18, color: "#e0e0e0", textAlign: "center", lineHeight: 26 },
+  resetBtn: { paddingVertical: 10 },
+  resetText: { fontSize: 15, color: "#4a9d9c", fontWeight: "600" },
 });

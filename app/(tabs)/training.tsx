@@ -44,7 +44,7 @@ export default function TrainingScreen() {
   const [session, setSession] = useState<SessionState | null>(null);
 
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const recorderState = useAudioRecorderState(audioRecorder);
+  useAudioRecorderState(audioRecorder);
 
   useEffect(() => {
     (async () => {
@@ -59,13 +59,7 @@ export default function TrainingScreen() {
     haptic.medium();
     const scenario = TRAINING_SCENARIOS.find((s) => s.id === scenarioId);
     if (!scenario) return;
-    setSession({
-      scenarioId,
-      phase: "prompt",
-      evaluation: null,
-      feedback: "",
-      correctAnswer: scenario.correctAnswer,
-    });
+    setSession({ scenarioId, phase: "prompt", evaluation: null, feedback: "", correctAnswer: scenario.correctAnswer });
     await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
     speakInstruction(scenario.prompt, { panicMode: panicDetected });
   };
@@ -93,15 +87,12 @@ export default function TrainingScreen() {
       let transcript = "I don't know";
       if (uri && Platform.OS !== "web") {
         try {
-          // Use manus-speech-to-text for transcription
           const { exec } = require("child_process");
           const { promisify } = require("util");
           const execAsync = promisify(exec);
           const { stdout } = await execAsync(`manus-speech-to-text "${uri}"`);
           transcript = stdout.trim() || transcript;
-        } catch {
-          // Transcription failed — use fallback
-        }
+        } catch { /* use fallback */ }
       }
       await evaluateAnswer(transcript);
     } catch {
@@ -123,43 +114,23 @@ export default function TrainingScreen() {
       );
       const resp = result.spokenResponse.toLowerCase();
       if (resp.includes("correct") && !resp.includes("incorrect") && !resp.includes("partial")) {
-        evaluation = "correct";
-        feedback = "Great answer! You identified the right action.";
+        evaluation = "correct"; feedback = "Great answer!";
       } else if (resp.includes("partial")) {
-        evaluation = "partial";
-        feedback = "Partially correct. You got part of it right.";
+        evaluation = "partial"; feedback = "Partially correct.";
       } else {
-        evaluation = "incorrect";
-        feedback = "Not quite. Here's what you should do:";
+        evaluation = "incorrect"; feedback = "Not quite. See correct answer below.";
       }
     } catch {
-      // Keyword fallback
       const lower = transcript.toLowerCase();
-      const matches = scenario.correctKeywords.filter((kw) =>
-        lower.includes(kw.toLowerCase())
-      );
-      if (matches.length >= 2) {
-        evaluation = "correct";
-        feedback = "Great answer! You identified the right action.";
-      } else if (matches.length === 1) {
-        evaluation = "partial";
-        feedback = "Partially correct. You got part of it right.";
-      } else {
-        evaluation = "incorrect";
-        feedback = "Not quite. Here's what you should do:";
-      }
+      const matches = scenario.correctKeywords.filter((kw) => lower.includes(kw.toLowerCase()));
+      if (matches.length >= 2) { evaluation = "correct"; feedback = "Great answer!"; }
+      else if (matches.length === 1) { evaluation = "partial"; feedback = "Partially correct."; }
+      else { evaluation = "incorrect"; feedback = "Not quite. See correct answer below."; }
     }
 
-    setSession((prev) =>
-      prev ? { ...prev, phase: "result", evaluation, feedback, correctAnswer: scenario.correctAnswer } : prev
-    );
+    setSession((prev) => prev ? { ...prev, phase: "result", evaluation, feedback, correctAnswer: scenario.correctAnswer } : prev);
 
-    const ttsText =
-      evaluation === "correct"
-        ? "Correct! Well done."
-        : evaluation === "partial"
-        ? "Partially correct. " + scenario.correctAnswer
-        : "Incorrect. " + scenario.correctAnswer;
+    const ttsText = evaluation === "correct" ? "Correct! Well done." : evaluation === "partial" ? "Partially correct. " + scenario.correctAnswer : "Incorrect. " + scenario.correctAnswer;
     speakInstruction(ttsText, { panicMode: panicDetected });
 
     if (evaluation === "correct") {
@@ -183,95 +154,73 @@ export default function TrainingScreen() {
     setSession(null);
   };
 
-  const handleCall = () => Linking.openURL("tel:103");
-
   // ── Session overlay ────────────────────────────────────────────────────────
   if (session) {
     const scenario = TRAINING_SCENARIOS.find((s) => s.id === session.scenarioId);
     return (
       <ScreenContainer containerClassName="bg-background" edges={["top", "left", "right", "bottom"]}>
         <View style={styles.sessionContainer}>
+          {/* Header */}
           <View style={styles.sessionHeader}>
             <Pressable onPress={handleCloseSession} style={styles.closeBtn}>
               <Text style={styles.closeBtnText}>✕</Text>
             </Pressable>
-            <Text style={styles.sessionTitle}>{scenario?.title} Scenario</Text>
+            <Text style={styles.sessionTitle}>{scenario?.title}</Text>
           </View>
 
+          {/* Scenario prompt — fills screen */}
           <View style={styles.promptCard}>
-            <Text style={styles.promptLabel}>SCENARIO</Text>
             <Text style={styles.promptText}>{scenario?.prompt}</Text>
           </View>
 
           {session.phase === "prompt" && (
-            <>
-              <View style={styles.instructionCard}>
-                <Text style={styles.instructionText}>
-                  🎙 Press the button below and speak your answer aloud.
-                </Text>
-              </View>
-              <Pressable
-                onPress={handleStartRecording}
-                style={({ pressed }) => [styles.recordBtn, pressed && { transform: [{ scale: 0.97 }] }]}
-              >
-                <Text style={styles.recordBtnText}>🎙 Record Answer</Text>
-              </Pressable>
-            </>
+            <Pressable
+              onPress={handleStartRecording}
+              style={({ pressed }) => [styles.actionBtn, styles.recordBtn, pressed && { transform: [{ scale: 0.97 }] }]}
+            >
+              <Text style={styles.actionBtnText}>🎙  Record Answer</Text>
+            </Pressable>
           )}
 
           {session.phase === "recording" && (
-            <>
-              <View style={styles.recordingCard}>
-                <Text style={styles.recordingText}>🔴 Recording…</Text>
-                <Text style={styles.recordingHint}>Speak your answer, then tap Stop</Text>
-              </View>
-              <Pressable
-                onPress={handleStopRecording}
-                style={({ pressed }) => [styles.stopBtn, pressed && { transform: [{ scale: 0.97 }] }]}
-              >
-                <Text style={styles.stopBtnText}>⏹ Stop & Evaluate</Text>
-              </Pressable>
-            </>
+            <Pressable
+              onPress={handleStopRecording}
+              style={({ pressed }) => [styles.actionBtn, styles.stopBtn, pressed && { transform: [{ scale: 0.97 }] }]}
+            >
+              <Text style={styles.actionBtnText}>⏹  Stop & Evaluate</Text>
+            </Pressable>
           )}
 
           {session.phase === "evaluating" && (
-            <View style={styles.evaluatingCard}>
+            <View style={styles.evaluatingWrap}>
               <ActivityIndicator size="large" color="#4a9d9c" />
-              <Text style={styles.evaluatingText}>AI is evaluating your answer…</Text>
+              <Text style={styles.evaluatingText}>Evaluating…</Text>
             </View>
           )}
 
           {session.phase === "result" && (
             <>
-              <View
-                style={[
-                  styles.resultCard,
-                  session.evaluation === "correct"
-                    ? styles.resultCorrect
-                    : session.evaluation === "partial"
-                    ? styles.resultPartial
-                    : styles.resultIncorrect,
-                ]}
-              >
+              <View style={[
+                styles.resultCard,
+                session.evaluation === "correct" ? styles.resultCorrect
+                  : session.evaluation === "partial" ? styles.resultPartial
+                  : styles.resultIncorrect,
+              ]}>
                 <Text style={styles.resultEmoji}>
                   {session.evaluation === "correct" ? "✅" : session.evaluation === "partial" ? "⚠️" : "❌"}
                 </Text>
                 <Text style={styles.resultLabel}>
-                  {session.evaluation === "correct" ? "CORRECT" : session.evaluation === "partial" ? "PARTIALLY CORRECT" : "INCORRECT"}
+                  {session.evaluation === "correct" ? "CORRECT" : session.evaluation === "partial" ? "PARTIAL" : "INCORRECT"}
                 </Text>
-                <Text style={styles.resultFeedback}>{session.feedback}</Text>
                 {session.evaluation !== "correct" && (
-                  <View style={styles.correctAnswerBox}>
-                    <Text style={styles.correctAnswerLabel}>Correct answer:</Text>
-                    <Text style={styles.correctAnswerText}>{session.correctAnswer}</Text>
-                  </View>
+                  <Text style={styles.correctAnswerText}>{session.correctAnswer}</Text>
                 )}
               </View>
               <Pressable
                 onPress={handleCloseSession}
-                style={({ pressed }) => [styles.doneBtn, pressed && { opacity: 0.8 }]}
+                style={({ pressed }) => [styles.actionBtn, styles.doneBtn, pressed && { opacity: 0.8 }]}
               >
-                <Text style={styles.doneBtnText}>✓ Done</Text>
+                <Text style={styles.actionBtnText}>✓  Done</Text>
               </Pressable>
             </>
           )}
@@ -284,16 +233,11 @@ export default function TrainingScreen() {
   return (
     <ScreenContainer containerClassName="bg-background">
       <View style={styles.container}>
+        {/* Header: title + streak */}
         <View style={styles.header}>
-          <View>
-            <Text style={styles.headerTitle}>🎯 Training Mode</Text>
-            <Text style={styles.headerSubtitle}>
-              {completedIds.length} / {TRAINING_SCENARIOS.length} completed
-            </Text>
-          </View>
+          <Text style={styles.headerTitle}>🎯 Training</Text>
           <View style={styles.streakBadge}>
             <Text style={styles.streakText}>🔥 {streak}</Text>
-            <Text style={styles.streakLabel}>streak</Text>
           </View>
         </View>
 
@@ -309,34 +253,25 @@ export default function TrainingScreen() {
                 onPress={() => handleStartScenario(item.id)}
                 style={({ pressed }) => [
                   styles.scenarioCard,
-                  pressed && { opacity: 0.85 },
+                  pressed && { opacity: 0.8 },
                   isCompleted && styles.scenarioCardDone,
                 ]}
               >
                 <View style={styles.scenarioLeft}>
-                  <View style={[styles.scenarioTag, { backgroundColor: item.tagColor + "30", borderColor: item.tagColor }]}>
-                    <Text style={[styles.scenarioTagText, { color: item.tagColor }]}>{item.tag}</Text>
-                  </View>
                   <Text style={styles.scenarioTitle}>{item.title}</Text>
-                  <Text style={styles.scenarioDesc}>{item.description}</Text>
+                  <Text style={styles.scenarioDesc} numberOfLines={2}>{item.description}</Text>
                 </View>
-                <View style={styles.scenarioRight}>
-                  {isCompleted ? (
-                    <Text style={styles.completedIcon}>✅</Text>
-                  ) : (
-                    <Text style={styles.startIcon}>▶</Text>
-                  )}
-                </View>
+                <Text style={styles.scenarioIcon}>{isCompleted ? "✅" : "▶"}</Text>
               </Pressable>
             );
           }}
         />
 
         <Pressable
-          onPress={handleCall}
+          onPress={() => Linking.openURL("tel:103")}
           style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
         >
-          <Text style={styles.callText}>📞 Call 103</Text>
+          <Text style={styles.callText}>📞  Call 103</Text>
         </Pressable>
       </View>
     </ScreenContainer>
@@ -344,26 +279,24 @@ export default function TrainingScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12 },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
+  container: { flex: 1, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 10 },
+  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
   headerTitle: { fontSize: 22, fontWeight: "800", color: "#FFFFFF" },
-  headerSubtitle: { fontSize: 13, color: "#e0e0e0", marginTop: 2 },
   streakBadge: {
     backgroundColor: "#FF3D3D20",
-    borderRadius: 12,
+    borderRadius: 10,
     paddingHorizontal: 14,
-    paddingVertical: 8,
-    alignItems: "center",
+    paddingVertical: 6,
     borderWidth: 1,
     borderColor: "#FF3D3D",
   },
   streakText: { fontSize: 18, fontWeight: "800", color: "#FF3D3D" },
-  streakLabel: { fontSize: 10, color: "#e0e0e0", marginTop: 1 },
-  listContent: { gap: 12, paddingBottom: 12 },
+  listContent: { gap: 10, paddingBottom: 12 },
   scenarioCard: {
     backgroundColor: "#1d2e3d",
     borderRadius: 16,
-    padding: 16,
+    paddingVertical: 18,
+    paddingHorizontal: 18,
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
@@ -371,82 +304,39 @@ const styles = StyleSheet.create({
   },
   scenarioCardDone: { borderColor: "#22C55E50", backgroundColor: "#22C55E10" },
   scenarioLeft: { flex: 1 },
-  scenarioTag: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    borderWidth: 1,
-    marginBottom: 6,
-  },
-  scenarioTagText: { fontSize: 11, fontWeight: "700" },
-  scenarioTitle: { fontSize: 17, fontWeight: "800", color: "#FFFFFF", marginBottom: 3 },
-  scenarioDesc: { fontSize: 13, color: "#e0e0e0" },
-  scenarioRight: { paddingLeft: 12 },
-  completedIcon: { fontSize: 24 },
-  startIcon: { fontSize: 22, color: "#4a9d9c" },
+  scenarioTitle: { fontSize: 17, fontWeight: "800", color: "#FFFFFF", marginBottom: 4 },
+  scenarioDesc: { fontSize: 13, color: "#9BA1A6", lineHeight: 18 },
+  scenarioIcon: { fontSize: 22, color: "#4a9d9c", paddingLeft: 12 },
   callBar: {
-    backgroundColor: "#FF3D3D",
-    borderRadius: 10,
-    paddingVertical: 14,
+    backgroundColor: "#22C55E",
+    borderRadius: 14,
+    paddingVertical: 18,
     alignItems: "center",
-    marginTop: 4,
   },
-  callText: { fontSize: 16, fontWeight: "700", color: "#FFFFFF" },
+  callText: { fontSize: 20, fontWeight: "800", color: "#FFFFFF", letterSpacing: 1 },
   // Session
-  sessionContainer: { flex: 1, paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12 },
-  sessionHeader: { flexDirection: "row", alignItems: "center", marginBottom: 16 },
-  closeBtn: { paddingRight: 12 },
-  closeBtnText: { fontSize: 20, color: "#FF3D3D", fontWeight: "700" },
-  sessionTitle: { fontSize: 18, fontWeight: "800", color: "#FFFFFF" },
+  sessionContainer: { flex: 1, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 10 },
+  sessionHeader: { flexDirection: "row", alignItems: "center", marginBottom: 12 },
+  closeBtn: { paddingRight: 14, paddingVertical: 6 },
+  closeBtnText: { fontSize: 22, color: "#FF3D3D", fontWeight: "700" },
+  sessionTitle: { fontSize: 18, fontWeight: "800", color: "#FFFFFF", flex: 1 },
   promptCard: {
+    flex: 1,
     backgroundColor: "#1d2e3d",
-    borderRadius: 16,
-    padding: 20,
+    borderRadius: 20,
+    padding: 24,
+    justifyContent: "center",
     borderWidth: 1,
     borderColor: "#354656",
-    marginBottom: 16,
+    marginBottom: 14,
   },
-  promptLabel: { fontSize: 11, color: "#4a9d9c", fontWeight: "700", letterSpacing: 2, marginBottom: 8 },
-  promptText: { fontSize: 16, fontWeight: "700", color: "#FFFFFF", lineHeight: 24 },
-  instructionCard: {
-    backgroundColor: "#0D6E6E20",
-    borderRadius: 10,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: "#0D6E6E",
-    marginBottom: 16,
-    flex: 1,
-    justifyContent: "center",
-  },
-  instructionText: { fontSize: 15, color: "#afffff", textAlign: "center" },
-  recordBtn: {
-    backgroundColor: "#4a9d9c",
-    borderRadius: 14,
-    paddingVertical: 18,
-    alignItems: "center",
-  },
-  recordBtnText: { fontSize: 18, fontWeight: "800", color: "#FFFFFF" },
-  recordingCard: {
-    flex: 1,
-    backgroundColor: "#FF3D3D20",
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#FF3D3D",
-    marginBottom: 16,
-  },
-  recordingText: { fontSize: 20, fontWeight: "800", color: "#FF3D3D", marginBottom: 8 },
-  recordingHint: { fontSize: 14, color: "#e0e0e0" },
-  stopBtn: {
-    backgroundColor: "#FF3D3D",
-    borderRadius: 14,
-    paddingVertical: 18,
-    alignItems: "center",
-  },
-  stopBtnText: { fontSize: 18, fontWeight: "800", color: "#FFFFFF" },
-  evaluatingCard: { flex: 1, alignItems: "center", justifyContent: "center", gap: 16 },
+  promptText: { fontSize: 20, fontWeight: "700", color: "#FFFFFF", lineHeight: 30, textAlign: "center" },
+  actionBtn: { borderRadius: 16, paddingVertical: 22, alignItems: "center", marginBottom: 0 },
+  actionBtnText: { fontSize: 20, fontWeight: "900", color: "#FFFFFF", letterSpacing: 1 },
+  recordBtn: { backgroundColor: "#4a9d9c" },
+  stopBtn: { backgroundColor: "#FF3D3D" },
+  doneBtn: { backgroundColor: "#22C55E" },
+  evaluatingWrap: { flex: 1, alignItems: "center", justifyContent: "center", gap: 16 },
   evaluatingText: { fontSize: 16, color: "#4a9d9c", fontWeight: "600" },
   resultCard: {
     flex: 1,
@@ -455,29 +345,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 2,
-    marginBottom: 16,
+    marginBottom: 14,
   },
   resultCorrect: { backgroundColor: "#22C55E20", borderColor: "#22C55E" },
   resultPartial: { backgroundColor: "#F59E0B20", borderColor: "#F59E0B" },
   resultIncorrect: { backgroundColor: "#FF3D3D20", borderColor: "#FF3D3D" },
-  resultEmoji: { fontSize: 56, marginBottom: 12 },
-  resultLabel: { fontSize: 20, fontWeight: "900", color: "#FFFFFF", marginBottom: 8 },
-  resultFeedback: { fontSize: 15, color: "#e0e0e0", textAlign: "center", marginBottom: 12 },
-  correctAnswerBox: {
-    backgroundColor: "#0D1F2D",
-    borderRadius: 10,
-    padding: 12,
-    width: "100%",
-    borderWidth: 1,
-    borderColor: "#354656",
-  },
-  correctAnswerLabel: { fontSize: 11, color: "#4a9d9c", fontWeight: "700", marginBottom: 4 },
-  correctAnswerText: { fontSize: 14, color: "#FFFFFF", lineHeight: 20 },
-  doneBtn: {
-    backgroundColor: "#22C55E",
-    borderRadius: 14,
-    paddingVertical: 16,
-    alignItems: "center",
-  },
-  doneBtnText: { fontSize: 17, fontWeight: "800", color: "#FFFFFF" },
+  resultEmoji: { fontSize: 64, marginBottom: 12 },
+  resultLabel: { fontSize: 22, fontWeight: "900", color: "#FFFFFF", marginBottom: 10 },
+  correctAnswerText: { fontSize: 15, color: "#e0e0e0", textAlign: "center", lineHeight: 22 },
 });

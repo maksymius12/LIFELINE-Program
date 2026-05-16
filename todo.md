@@ -67,3 +67,20 @@
 - [x] Keep-awake on all emergency screens (SOS, Panic, Medical)
 - [x] TypeScript check passes (0 errors)
 - [x] All 22 tests pass
+
+## Emergency UX Simplification (v1.3)
+
+- [x] Home: remove tagline, shrink badge, keep only SOS + grid + call bar
+- [x] Home: enlarge disaster grid cards (larger emoji, larger label)
+- [x] Home: make Call 103 bar taller and more prominent
+- [x] SOS: remove info card text, keep only circle + status + call bar
+- [x] SOS: remove AI bar label, simplify header
+- [x] Panic Mode: show one instruction at a time, full-screen, huge text
+- [x] Panic Mode: DONE and Can't Do It buttons must be thumb-sized (min 64px height)
+- [x] Panic Mode: remove step counter text, keep only dots
+- [x] Medical AI: show only question text + YES / NO buttons, nothing else
+- [x] Medical AI: YES/NO buttons must be full-width, min 80px height
+- [x] Medical AI: protocol steps — one per screen, huge text, single NEXT button
+- [x] Training: simplify card list, remove tag/step count clutter
+- [x] Settings: remove About section and Voice AI info card
+- [x] Settings: keep only family number input + TTS toggle + haptics toggle

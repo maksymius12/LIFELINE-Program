@@ -9,7 +9,7 @@ import { useAppContext } from "@/lib/app-context";
 export default function HomeScreen() {
   const router = useRouter();
   const { settings } = useSettings();
-  const { batteryLevel, blackoutMode, panicDetected, toggleBlackoutMode } = useAppContext();
+  const { blackoutMode, toggleBlackoutMode, batteryLevel } = useAppContext();
 
   const handleSOS = () => {
     haptic.heavy();
@@ -23,17 +23,11 @@ export default function HomeScreen() {
 
   const handleCall = () => Linking.openURL("tel:103");
 
-  const batteryPct = Math.round(batteryLevel * 100);
-  const batteryColor =
-    batteryPct <= 15 ? "#FF3D3D" : batteryPct <= 30 ? "#F59E0B" : "#22C55E";
-
-  // Blackout mode: minimal UI with maximum contrast
+  // Blackout mode: pure black, only SOS + call
   if (blackoutMode) {
     return (
       <ScreenContainer containerClassName="bg-[#000000]" edges={["top", "left", "right", "bottom"]}>
-        <View style={styles.blackoutContainer}>
-          <Text style={styles.blackoutTitle}>LIFELINE</Text>
-          <Text style={styles.blackoutBattery}>🔋 {batteryPct}%</Text>
+        <View style={styles.blackout}>
           <Pressable
             onPress={handleSOS}
             style={({ pressed }) => [styles.blackoutSOS, pressed && { opacity: 0.8 }]}
@@ -46,90 +40,63 @@ export default function HomeScreen() {
           >
             <Text style={styles.blackoutCallText}>📞 103</Text>
           </Pressable>
-          <Pressable
-            onPress={toggleBlackoutMode}
-            style={({ pressed }) => [styles.blackoutExit, pressed && { opacity: 0.7 }]}
-          >
-            <Text style={styles.blackoutExitText}>Exit Blackout Mode</Text>
+          <Pressable onPress={toggleBlackoutMode} style={styles.blackoutExit}>
+            <Text style={styles.blackoutExitText}>Exit Blackout</Text>
           </Pressable>
         </View>
       </ScreenContainer>
     );
   }
 
+  const batteryPct = Math.round(batteryLevel * 100);
+
   return (
     <ScreenContainer containerClassName="bg-background">
       <View style={styles.container}>
-        {/* Header */}
+
+        {/* Minimal header */}
         <View style={styles.header}>
-          <View>
-            <Text style={styles.title}>LIFELINE</Text>
-            <Text style={styles.tagline}>AI Survival Companion</Text>
-          </View>
-          <View style={styles.headerRight}>
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>● OFFLINE AI</Text>
-            </View>
-            {batteryPct <= 30 && (
-              <Pressable
-                onPress={toggleBlackoutMode}
-                style={[styles.batteryBadge, { borderColor: batteryColor }]}
-              >
-                <Text style={[styles.batteryText, { color: batteryColor }]}>
-                  🔋 {batteryPct}%
-                </Text>
-              </Pressable>
-            )}
-          </View>
+          <Text style={styles.title}>LIFELINE</Text>
+          {batteryPct <= 30 && (
+            <Pressable onPress={toggleBlackoutMode} style={styles.batteryBtn}>
+              <Text style={[styles.batteryText, { color: batteryPct <= 15 ? "#FF3D3D" : "#F59E0B" }]}>
+                🔋 {batteryPct}%
+              </Text>
+            </Pressable>
+          )}
         </View>
 
-        {/* Panic detected banner */}
-        {panicDetected && (
-          <View style={styles.panicBanner}>
-            <Text style={styles.panicText}>⚠️ PANIC MODE ACTIVE — UI enlarged</Text>
-          </View>
-        )}
-
-        {/* Family Contact Banner */}
-        {settings.familyNumber ? (
-          <View style={styles.contactBanner}>
-            <Text style={styles.contactText}>
-              📱 Emergency contact: {settings.familyNumber}
-            </Text>
-          </View>
-        ) : (
+        {/* No-contact warning — one line only */}
+        {!settings.familyNumber && (
           <Pressable
             onPress={() => router.push("/(tabs)/settings")}
-            style={({ pressed }) => [styles.contactBannerEmpty, pressed && { opacity: 0.7 }]}
+            style={({ pressed }) => [styles.noContact, pressed && { opacity: 0.7 }]}
           >
-            <Text style={styles.contactTextEmpty}>
-              ⚠️ No emergency contact — tap to add in Settings
-            </Text>
+            <Text style={styles.noContactText}>⚠ Add emergency contact</Text>
           </Pressable>
         )}
 
-        {/* SOS Button */}
-        <View style={styles.sosContainer}>
+        {/* SOS button — dominant element */}
+        <View style={styles.sosWrap}>
           <Pressable
             onPress={handleSOS}
             style={({ pressed }) => [
-              styles.sosButton,
-              panicDetected && styles.sosButtonLarge,
-              pressed && { transform: [{ scale: 0.95 }], opacity: 0.9 },
+              styles.sosBtn,
+              pressed && { transform: [{ scale: 0.95 }] },
             ]}
           >
-            <Text style={[styles.sosText, panicDetected && { fontSize: 44 }]}>SOS</Text>
-            <Text style={styles.sosSubtext}>PRESS & SPEAK</Text>
+            <Text style={styles.sosLabel}>SOS</Text>
+            <Text style={styles.sosHint}>PRESS & SPEAK</Text>
           </Pressable>
         </View>
 
-        {/* Disaster Grid */}
+        {/* Disaster grid — 2 columns, large tap targets */}
         <View style={styles.grid}>
           {DISASTER_BUTTONS.map((item) => (
             <Pressable
               key={item.type}
               onPress={() => handleDisaster(item.type)}
-              style={({ pressed }) => [styles.gridItem, pressed && { opacity: 0.7 }]}
+              style={({ pressed }) => [styles.gridItem, pressed && { opacity: 0.65 }]}
             >
               <Text style={styles.gridEmoji}>{item.emoji}</Text>
               <Text style={styles.gridLabel}>{item.label}</Text>
@@ -137,137 +104,168 @@ export default function HomeScreen() {
           ))}
         </View>
 
-        {/* Emergency Call Bar */}
+        {/* Call bar — always visible at bottom */}
         <Pressable
           onPress={handleCall}
           style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
         >
-          <Text style={styles.callText}>📞 Call Emergency — 103</Text>
+          <Text style={styles.callText}>📞  Call 103</Text>
         </Pressable>
+
       </View>
     </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12 },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
-  headerRight: { alignItems: "flex-end", gap: 6 },
-  title: { fontSize: 32, fontWeight: "800", color: "#FFFFFF", letterSpacing: 2 },
-  tagline: { fontSize: 14, color: "#e0e0e0", marginTop: 2 },
-  badge: {
-    backgroundColor: "#0D6E6E",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
+  container: {
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 10,
   },
-  badgeText: { color: "#afffff", fontSize: 11, fontWeight: "700" },
-  batteryBadge: {
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 6,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: "900",
+    color: "#FFFFFF",
+    letterSpacing: 3,
+  },
+  batteryBtn: {
     paddingHorizontal: 8,
-    paddingVertical: 3,
+    paddingVertical: 4,
     borderRadius: 8,
     borderWidth: 1,
+    borderColor: "#F59E0B",
   },
-  batteryText: { fontSize: 11, fontWeight: "700" },
-  panicBanner: {
-    backgroundColor: "#FF3D3D20",
+  batteryText: {
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  noContact: {
+    backgroundColor: "#FF3D3D18",
     borderRadius: 8,
-    paddingVertical: 6,
+    paddingVertical: 8,
     paddingHorizontal: 12,
-    marginTop: 8,
+    marginBottom: 8,
     borderWidth: 1,
-    borderColor: "#FF3D3D",
+    borderColor: "#FF3D3D60",
+    alignItems: "center",
   },
-  panicText: { fontSize: 12, color: "#FF3D3D", fontWeight: "700", textAlign: "center" },
-  contactBanner: {
-    backgroundColor: "#0D6E6E30",
-    borderRadius: 8,
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    marginTop: 8,
-    borderWidth: 1,
-    borderColor: "#0D6E6E",
+  noContactText: {
+    fontSize: 13,
+    color: "#FF3D3D",
+    fontWeight: "700",
   },
-  contactText: { fontSize: 13, color: "#afffff", fontWeight: "600" },
-  contactBannerEmpty: {
-    backgroundColor: "#FF3D3D15",
-    borderRadius: 8,
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    marginTop: 8,
-    borderWidth: 1,
-    borderColor: "#FF3D3D50",
+  sosWrap: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    minHeight: 150,
   },
-  contactTextEmpty: { fontSize: 13, color: "#FF3D3D", fontWeight: "600" },
-  sosContainer: { flex: 1, justifyContent: "center", alignItems: "center", minHeight: 160 },
-  sosButton: {
-    width: 140,
-    height: 140,
-    borderRadius: 70,
+  sosBtn: {
+    width: 150,
+    height: 150,
+    borderRadius: 75,
     backgroundColor: "#FF3D3D",
     justifyContent: "center",
     alignItems: "center",
     shadowColor: "#FF3D3D",
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.6,
-    shadowRadius: 20,
-    elevation: 10,
+    shadowOpacity: 0.7,
+    shadowRadius: 24,
+    elevation: 12,
   },
-  sosButtonLarge: { width: 160, height: 160, borderRadius: 80 },
-  sosText: { fontSize: 36, fontWeight: "900", color: "#FFFFFF", letterSpacing: 3 },
-  sosSubtext: { fontSize: 9, fontWeight: "600", color: "#FFFFFF", marginTop: 4, opacity: 0.9 },
+  sosLabel: {
+    fontSize: 40,
+    fontWeight: "900",
+    color: "#FFFFFF",
+    letterSpacing: 4,
+  },
+  sosHint: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: "#FFFFFF",
+    marginTop: 4,
+    opacity: 0.85,
+    letterSpacing: 1,
+  },
   grid: {
     flexDirection: "row",
     flexWrap: "wrap",
     justifyContent: "space-between",
-    gap: 10,
-    marginBottom: 16,
+    gap: 8,
+    marginBottom: 10,
   },
   gridItem: {
     width: "31%",
     backgroundColor: "#1d2e3d",
-    borderRadius: 12,
-    paddingVertical: 16,
+    borderRadius: 14,
+    paddingVertical: 18,
     alignItems: "center",
     borderWidth: 1,
     borderColor: "#354656",
   },
-  gridEmoji: { fontSize: 28, marginBottom: 6 },
-  gridLabel: { fontSize: 12, fontWeight: "600", color: "#FFFFFF" },
+  gridEmoji: {
+    fontSize: 30,
+    marginBottom: 6,
+  },
+  gridLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
   callBar: {
     backgroundColor: "#22C55E",
-    borderRadius: 12,
-    paddingVertical: 14,
+    borderRadius: 14,
+    paddingVertical: 18,
     alignItems: "center",
   },
-  callText: { fontSize: 16, fontWeight: "700", color: "#FFFFFF" },
-  // Blackout mode
-  blackoutContainer: {
+  callText: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    letterSpacing: 1,
+  },
+  // Blackout
+  blackout: {
     flex: 1,
-    backgroundColor: "#000000",
+    backgroundColor: "#000",
     alignItems: "center",
     justifyContent: "center",
-    gap: 20,
+    gap: 24,
     paddingHorizontal: 24,
   },
-  blackoutTitle: { fontSize: 40, fontWeight: "900", color: "#FFFFFF", letterSpacing: 4 },
-  blackoutBattery: { fontSize: 18, color: "#FF3D3D", fontWeight: "700" },
   blackoutSOS: {
-    width: 160,
-    height: 160,
-    borderRadius: 80,
+    width: 170,
+    height: 170,
+    borderRadius: 85,
     backgroundColor: "#FF3D3D",
     justifyContent: "center",
     alignItems: "center",
   },
-  blackoutSOSText: { fontSize: 44, fontWeight: "900", color: "#FFFFFF", letterSpacing: 4 },
+  blackoutSOSText: {
+    fontSize: 48,
+    fontWeight: "900",
+    color: "#FFF",
+    letterSpacing: 4,
+  },
   blackoutCall: {
     backgroundColor: "#22C55E",
     borderRadius: 14,
-    paddingVertical: 18,
-    paddingHorizontal: 48,
+    paddingVertical: 20,
+    paddingHorizontal: 56,
   },
-  blackoutCallText: { fontSize: 24, fontWeight: "800", color: "#FFFFFF" },
+  blackoutCallText: {
+    fontSize: 26,
+    fontWeight: "800",
+    color: "#FFF",
+  },
   blackoutExit: { marginTop: 8 },
-  blackoutExitText: { fontSize: 14, color: "#666", textDecorationLine: "underline" },
+  blackoutExitText: { fontSize: 13, color: "#555", textDecorationLine: "underline" },
 });
