@@ -119,3 +119,23 @@
 - [x] Show AI response as both text and TTS
 - [x] Build Prepare tab: training scenarios + My Kit checklist
 - [x] My Kit: tap-to-check supply list persisted in AsyncStorage
+
+## v1.8 — Team Prompt Integration
+
+### What we ADD (new features):
+- [ ] Voice command engine: VOICE_COMMANDS matcher (done/repeat/alternative/back/call/confirm/deny)
+- [ ] Always-listening mode after SOS pressed (auto-restart recording after each AI response)
+- [ ] Visual feedback: pulsing wave = listening, spinner = processing (already partially done)
+- [ ] EmergencyMap component: GPS + user marker + danger circle + AI route polyline
+- [ ] getEvacuationRoute() server route: calls Manus LLM with GPS + emergency type
+- [ ] Integrate EmergencyMap into Panic Mode screen
+- [ ] SMS includes Google Maps link + AI evacuation direction
+- [ ] Remove streak counter from Training Mode
+- [ ] Apple Watch phone-side listener stub (NativeModules.WatchConnectivity)
+
+### What we KEEP OUR WAY (not overriding):
+- [x] Manus LLM instead of localhost:8080 Gemma (our decision)
+- [x] 3-tab structure: SOS, Prepare, Settings (our decision)
+- [x] 911-call conversation loop (our decision)
+- [x] E-Script Engine for agentic UI (our decision)
+- [x] Typed text fallback alongside voice (our decision)

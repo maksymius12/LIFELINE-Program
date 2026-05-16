@@ -6,8 +6,9 @@ import {
   Linking,
   ActivityIndicator,
   Animated,
+  ScrollView,
 } from "react-native";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useKeepAwake } from "expo-keep-awake";
 import { ScreenContainer } from "@/components/screen-container";
@@ -16,6 +17,9 @@ import { haptic } from "@/lib/haptics";
 import { speakInstruction, stopSpeech } from "@/lib/speech";
 import { analyzeEmergency } from "@/lib/ai-analysis";
 import { useAppContext } from "@/lib/app-context";
+import { EmergencyMap, type Coords } from "@/components/EmergencyMap";
+import { sendEmergencySMS } from "@/lib/family-sms";
+import { trpc } from "@/lib/trpc";
 
 export default function PanicScreen() {
   useKeepAwake();
@@ -33,8 +37,17 @@ export default function PanicScreen() {
   const [altInstruction, setAltInstruction] = useState<string | null>(null);
   const [loadingAlt, setLoadingAlt] = useState(false);
 
+  // Map / evacuation state
+  const [userCoords, setUserCoords] = useState<Coords | null>(null);
+  const [aiRoute, setAiRoute] = useState<Coords[] | null>(null);
+  const [aiRouteInstruction, setAiRouteInstruction] = useState<string | null>(null);
+  const [loadingRoute, setLoadingRoute] = useState(false);
+
   const dotAnims = useRef(steps.map(() => new Animated.Value(1))).current;
 
+  const evacuationMutation = trpc.emergency.evacuation.useMutation();
+
+  // ── Dot animation ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (!animationsEnabled || completed) return;
     Animated.spring(dotAnims[currentStep], {
@@ -45,6 +58,7 @@ export default function PanicScreen() {
     return () => { dotAnims[currentStep].setValue(1); };
   }, [currentStep, completed, animationsEnabled]);
 
+  // ── TTS on step change ─────────────────────────────────────────────────────
   useEffect(() => {
     if (completed) {
       speakInstruction("You did great. Stay calm.", { panicMode: panicDetected });
@@ -55,6 +69,35 @@ export default function PanicScreen() {
     return () => stopSpeech();
   }, [currentStep, altInstruction, completed, panicDetected]);
 
+  // ── Request evacuation route once GPS is ready ─────────────────────────────
+  const handleMapReady = useCallback(async (coords: Coords) => {
+    setUserCoords(coords);
+    setLoadingRoute(true);
+    try {
+      const result = await evacuationMutation.mutateAsync({
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        emergencyType: disasterType,
+      });
+      if (result.waypoints && result.waypoints.length > 0) {
+        setAiRoute(result.waypoints);
+        setAiRouteInstruction(result.instruction);
+        // Speak the evacuation direction
+        speakInstruction(result.instruction, { panicMode: panicDetected });
+        // Include route in SMS
+        const mapsLink = `https://maps.google.com/?q=${result.waypoints[result.waypoints.length - 1].latitude},${result.waypoints[result.waypoints.length - 1].longitude}`;
+        sendEmergencySMS(
+          `LIFELINE ALERT: ${scenario.title} emergency. Evacuation route: ${result.instruction}. Destination: ${mapsLink}`
+        ).catch(() => {});
+      }
+    } catch {
+      // silently fail — map still shows user position
+    } finally {
+      setLoadingRoute(false);
+    }
+  }, [disasterType, panicDetected, scenario.title]);
+
+  // ── Step handlers ──────────────────────────────────────────────────────────
   const handleDone = () => {
     registerTap();
     haptic.heavy();
@@ -93,6 +136,13 @@ export default function PanicScreen() {
           <Text style={styles.completionEmoji}>✅</Text>
           <Text style={styles.completionTitle}>You did great.</Text>
           <Text style={styles.completionSub}>Stay calm. Help is on the way.</Text>
+          {userCoords && (
+            <EmergencyMap
+              emergencyType={disasterType}
+              aiRoute={aiRoute}
+              aiInstruction={aiRouteInstruction}
+            />
+          )}
           <Pressable
             onPress={handleCall}
             style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
@@ -108,12 +158,15 @@ export default function PanicScreen() {
   }
 
   // ── Step screen ────────────────────────────────────────────────────────────
-  const instructionFontSize = panicDetected ? 30 : 28;
+  const instructionFontSize = panicDetected ? 30 : 26;
 
   return (
     <ScreenContainer containerClassName="bg-background" edges={["top", "left", "right", "bottom"]}>
-      <View style={styles.container}>
-
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Minimal header: back + type label */}
         <View style={styles.header}>
           <Pressable onPress={handleBack} style={styles.backBtn}>
@@ -125,7 +178,7 @@ export default function PanicScreen() {
           <Text style={styles.stepNum}>{currentStep + 1}/{steps.length}</Text>
         </View>
 
-        {/* Progress dots — small, unobtrusive */}
+        {/* Progress dots */}
         <View style={styles.dotsRow}>
           {steps.map((_, i) => (
             <Animated.View
@@ -141,7 +194,19 @@ export default function PanicScreen() {
           ))}
         </View>
 
-        {/* Instruction card — fills most of the screen */}
+        {/* Emergency Map */}
+        <EmergencyMap
+          emergencyType={disasterType}
+          aiRoute={aiRoute}
+          aiInstruction={
+            loadingRoute
+              ? "Getting evacuation route…"
+              : aiRouteInstruction
+          }
+          onMapReady={handleMapReady}
+        />
+
+        {/* Instruction card */}
         <View style={styles.card}>
           <Text style={styles.emoji}>{steps[currentStep]?.emoji}</Text>
           <Text style={[styles.instruction, { fontSize: instructionFontSize, lineHeight: instructionFontSize * 1.35 }]}>
@@ -163,7 +228,7 @@ export default function PanicScreen() {
           <Text style={styles.doneBtnText}>✓  DONE</Text>
         </Pressable>
 
-        {/* Can't do it — secondary, smaller */}
+        {/* Can't do it */}
         <Pressable
           onPress={handleCantDo}
           disabled={loadingAlt}
@@ -182,14 +247,13 @@ export default function PanicScreen() {
         >
           <Text style={styles.callText}>📞  Call 103</Text>
         </Pressable>
-
-      </View>
+      </ScrollView>
     </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 10 },
+  scrollContent: { paddingHorizontal: 16, paddingTop: 6, paddingBottom: 20 },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -200,13 +264,12 @@ const styles = StyleSheet.create({
   backBtnText: { fontSize: 24, color: "#4a9d9c", fontWeight: "700" },
   typeLabel: { fontSize: 15, fontWeight: "800", letterSpacing: 0.5 },
   stepNum: { fontSize: 15, color: "#e0e0e0", fontWeight: "700", minWidth: 36, textAlign: "right" },
-  dotsRow: { flexDirection: "row", justifyContent: "center", gap: 10, marginBottom: 12 },
+  dotsRow: { flexDirection: "row", justifyContent: "center", gap: 10, marginBottom: 4 },
   dot: { width: 12, height: 12, borderRadius: 6 },
   dotDone: { backgroundColor: "#22C55E" },
   dotActive: { backgroundColor: "#FF3D3D" },
   dotPending: { backgroundColor: "#354656" },
   card: {
-    flex: 1,
     backgroundColor: "#1d2e3d",
     borderRadius: 20,
     paddingHorizontal: 24,
@@ -216,8 +279,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#354656",
     marginBottom: 12,
+    marginTop: 4,
+    minHeight: 180,
   },
-  emoji: { fontSize: 80, marginBottom: 20 },
+  emoji: { fontSize: 64, marginBottom: 16 },
   instruction: { fontWeight: "800", color: "#FFFFFF", textAlign: "center" },
   altLabel: { marginTop: 12, fontSize: 13, color: "#4a9d9c", fontWeight: "700" },
   doneBtn: {

@@ -5,7 +5,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const FAMILY_NUMBER_KEY = "lifeline_family_number";
 
-export const sendEmergencySMS = async (): Promise<boolean> => {
+export const sendEmergencySMS = async (customMessage?: string): Promise<boolean> => {
   if (Platform.OS === "web") return false;
 
   const isAvailable = await SMS.isAvailableAsync();
@@ -27,10 +27,9 @@ export const sendEmergencySMS = async (): Promise<boolean> => {
     // GPS unavailable — send without location
   }
 
-  await SMS.sendSMSAsync(
-    [familyNumber],
-    `🆘 LIFELINE ALERT\nI need help. My location: ${locationText}\nSent automatically by LIFELINE app.`
-  );
+  const message = customMessage
+    ?? `🆘 LIFELINE ALERT\nI need help. My location: ${locationText}\nSent automatically by LIFELINE app.`;
+  await SMS.sendSMSAsync([familyNumber], message);
   return true;
 };
 

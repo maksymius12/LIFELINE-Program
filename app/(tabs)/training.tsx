@@ -24,7 +24,6 @@ import { analyzeEmergency } from "@/lib/ai-analysis";
 import { useAppContext } from "@/lib/app-context";
 import { transcribeAudioUri } from "@/lib/transcription";
 
-const STREAK_KEY = "training_streak";
 const COMPLETED_KEY = "training_completed";
 
 type SessionPhase = "prompt" | "recording" | "evaluating" | "result";
@@ -40,7 +39,6 @@ interface SessionState {
 export default function TrainingScreen() {
   const { panicDetected } = useAppContext();
 
-  const [streak, setStreak] = useState(0);
   const [completedIds, setCompletedIds] = useState<string[]>([]);
   const [session, setSession] = useState<SessionState | null>(null);
 
@@ -49,9 +47,7 @@ export default function TrainingScreen() {
 
   useEffect(() => {
     (async () => {
-      const s = await AsyncStorage.getItem(STREAK_KEY);
       const c = await AsyncStorage.getItem(COMPLETED_KEY);
-      if (s) setStreak(parseInt(s, 10));
       if (c) setCompletedIds(JSON.parse(c));
     })();
   }, []);
@@ -127,9 +123,6 @@ export default function TrainingScreen() {
 
     if (evaluation === "correct") {
       haptic.success();
-      const newStreak = streak + 1;
-      setStreak(newStreak);
-      await AsyncStorage.setItem(STREAK_KEY, String(newStreak));
       if (!completedIds.includes(session.scenarioId)) {
         const newCompleted = [...completedIds, session.scenarioId];
         setCompletedIds(newCompleted);
@@ -225,12 +218,9 @@ export default function TrainingScreen() {
   return (
     <ScreenContainer containerClassName="bg-background">
       <View style={styles.container}>
-        {/* Header: title + streak */}
+        {/* Header */}
         <View style={styles.header}>
           <Text style={styles.headerTitle}>🎯 Training</Text>
-          <View style={styles.streakBadge}>
-            <Text style={styles.streakText}>🔥 {streak}</Text>
-          </View>
         </View>
 
         <FlatList
@@ -274,15 +264,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 10 },
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
   headerTitle: { fontSize: 22, fontWeight: "800", color: "#FFFFFF" },
-  streakBadge: {
-    backgroundColor: "#FF3D3D20",
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderWidth: 1,
-    borderColor: "#FF3D3D",
-  },
-  streakText: { fontSize: 18, fontWeight: "800", color: "#FF3D3D" },
   listContent: { gap: 10, paddingBottom: 12 },
   scenarioCard: {
     backgroundColor: "#1d2e3d",

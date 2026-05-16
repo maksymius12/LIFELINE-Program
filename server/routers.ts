@@ -236,6 +236,66 @@ export const appRouter = router({
       }),
 
     /**
+     * Get AI evacuation route for a given GPS position + emergency type.
+     * Returns a polyline (array of lat/lng waypoints) + spoken instruction.
+     */
+    evacuation: publicProcedure
+      .input(
+        z.object({
+          latitude: z.number(),
+          longitude: z.number(),
+          emergencyType: z.string(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        const prompt = `Emergency type: ${input.emergencyType}.
+User GPS: ${input.latitude.toFixed(5)}, ${input.longitude.toFixed(5)}.
+
+Respond ONLY with valid JSON:
+{
+  "instruction": "Short spoken direction (max 15 words)",
+  "direction": "north" | "south" | "east" | "west" | "northeast" | "northwest" | "southeast" | "southwest",
+  "distance_meters": number,
+  "waypoints": [
+    { "latitude": number, "longitude": number }
+  ]
+}
+
+Waypoints should form a realistic evacuation route away from the danger zone.
+Provide 2-4 waypoints. The last waypoint should be the safe destination.
+Base direction on the emergency type (fire = upwind, flood = uphill, etc.).`;
+
+        const response = await invokeLLM({
+          messages: [
+            { role: "system", content: "You are an emergency evacuation route planner. Respond only with valid JSON." } as Message,
+            { role: "user", content: prompt } as Message,
+          ],
+          response_format: { type: "json_object" },
+        });
+
+        const rawContent = response.choices[0]?.message?.content ?? "{}";
+        const raw = typeof rawContent === "string" ? rawContent : JSON.stringify(rawContent);
+        try {
+          const data = JSON.parse(raw);
+          return {
+            success: true,
+            instruction: data.instruction ?? "Move away from the danger zone",
+            direction: data.direction ?? "north",
+            distance_meters: data.distance_meters ?? 300,
+            waypoints: data.waypoints ?? [],
+          };
+        } catch {
+          return {
+            success: false,
+            instruction: "Move away from the danger zone",
+            direction: "north",
+            distance_meters: 300,
+            waypoints: [],
+          };
+        }
+      }),
+
+    /**
      * Transcribe audio from a URL using Whisper.
      */
     transcribe: publicProcedure
