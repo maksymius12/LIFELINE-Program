@@ -26,7 +26,8 @@ export default function HomeScreen() {
 
   const handleDisaster = (type: string) => {
     haptic.medium();
-    router.push(`/panic?type=${type}`);
+    // DEMO MODE: bypass live AI, go directly to E-Script agentic UI
+    router.push(`/demo-escript?type=${type}`);
   };
 
   const handleCall = () => Linking.openURL("tel:103");
