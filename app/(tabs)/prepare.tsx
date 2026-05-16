@@ -1,440 +1,413 @@
+/**
+ * PREPARE SCREEN — Voice-Only Training
+ *
+ * 4 scenario cards. User SPEAKS the scenario name to start.
+ * Gemma generates scenario prompt aloud.
+ * User answers by speaking.
+ * Gemma evaluates and responds aloud.
+ *
+ * NO text input. NO keyboard. NO streak counter.
+ * Progress bars only.
+ */
 import {
   Text,
   View,
   Pressable,
   StyleSheet,
-  FlatList,
-  Linking,
-  ActivityIndicator,
   Platform,
-  ScrollView,
 } from "react-native";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   useAudioRecorder,
   useAudioRecorderState,
   RecordingPresets,
+  requestRecordingPermissionsAsync,
   setAudioModeAsync,
 } from "expo-audio";
+import * as Speech from "expo-speech";
 import { ScreenContainer } from "@/components/screen-container";
 import { TRAINING_SCENARIOS } from "@/constants/emergency-data";
 import { haptic } from "@/lib/haptics";
-import { speakInstruction, stopSpeech } from "@/lib/speech";
-import { analyzeEmergency } from "@/lib/ai-analysis";
-import { useAppContext } from "@/lib/app-context";
-import { transcribeAudioUri } from "@/lib/transcription";
+import { chatWithOperatorLocal } from "@/lib/local-emergency-chat";
+import { uploadAudioUri } from "@/lib/transcription";
+import type { ConversationMessage } from "@/lib/ai-analysis";
 
-// ── My Kit checklist ──────────────────────────────────────────────────────────
-const KIT_ITEMS = [
-  { id: "water", label: "💧 Water (3-day supply)", desc: "3L per person per day" },
-  { id: "firstaid", label: "🩹 First Aid Kit", desc: "Bandages, antiseptic, gloves" },
-  { id: "flashlight", label: "🔦 Flashlight + batteries", desc: "Or hand-crank / solar" },
-  { id: "powerbank", label: "🔋 Power bank (charged)", desc: "10,000 mAh minimum" },
-  { id: "documents", label: "📄 Documents (copies)", desc: "ID, insurance, contacts" },
-  { id: "cash", label: "💵 Cash (small bills)", desc: "ATMs may be offline" },
-  { id: "whistle", label: "📯 Emergency whistle", desc: "Signal rescuers" },
-  { id: "meds", label: "💊 Medications (7-day)", desc: "Prescriptions + basics" },
-];
-
-const KIT_KEY = "kit_checked";
 const COMPLETED_KEY = "training_completed";
+const SILENCE_MS = 3500;
 
-type SessionPhase = "prompt" | "recording" | "evaluating" | "result";
-type Tab = "kit" | "training";
+type SessionPhase = "intro" | "listening" | "processing" | "feedback";
 
-interface SessionState {
+interface Session {
   scenarioId: string;
   phase: SessionPhase;
-  evaluation: "correct" | "partial" | "incorrect" | null;
   feedback: string;
-  correctAnswer: string;
+  history: ConversationMessage[];
+}
+
+function speak(text: string, onDone?: () => void) {
+  Speech.stop();
+  Speech.speak(text, {
+    language: "en-US",
+    pitch: 1.0,
+    rate: 0.85,
+    volume: 1.0,
+    onDone,
+    onStopped: onDone,
+    onError: onDone,
+  });
 }
 
 export default function PrepareScreen() {
-  const { panicDetected } = useAppContext();
-
-  const [activeTab, setActiveTab] = useState<Tab>("kit");
-
-  // Kit state
-  const [checkedIds, setCheckedIds] = useState<string[]>([]);
-
-  // Training state
   const [completedIds, setCompletedIds] = useState<string[]>([]);
-  const [session, setSession] = useState<SessionState | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [micAvailable, setMicAvailable] = useState(true);
 
+  const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   useAudioRecorderState(audioRecorder);
+  const sessionRef = useRef<Session | null>(null);
+  sessionRef.current = session;
 
   useEffect(() => {
     (async () => {
-      const k = await AsyncStorage.getItem(KIT_KEY);
-      if (k) setCheckedIds(JSON.parse(k));
       const c = await AsyncStorage.getItem(COMPLETED_KEY);
       if (c) setCompletedIds(JSON.parse(c));
+
+      if (Platform.OS !== "web") {
+        const { granted } = await requestRecordingPermissionsAsync();
+        setMicAvailable(granted);
+        if (granted) {
+          await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
+        }
+      } else {
+        setMicAvailable(false);
+      }
     })();
+
+    return () => {
+      Speech.stop();
+      if (silenceTimer.current) clearTimeout(silenceTimer.current);
+    };
   }, []);
 
-  // ── Kit handlers ─────────────────────────────────────────────────────────────
-  const toggleKit = async (id: string) => {
-    haptic.light();
-    const next = checkedIds.includes(id)
-      ? checkedIds.filter((i) => i !== id)
-      : [...checkedIds, id];
-    setCheckedIds(next);
-    await AsyncStorage.setItem(KIT_KEY, JSON.stringify(next));
-  };
-
-  // ── Training handlers ─────────────────────────────────────────────────────────
-  const handleStartScenario = async (scenarioId: string) => {
+  // ── Start scenario ────────────────────────────────────────────────────────────
+  const startScenario = useCallback((scenarioId: string) => {
     haptic.medium();
     const scenario = TRAINING_SCENARIOS.find((s) => s.id === scenarioId);
     if (!scenario) return;
-    setSession({ scenarioId, phase: "prompt", evaluation: null, feedback: "", correctAnswer: scenario.correctAnswer });
-    await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
-    speakInstruction(scenario.prompt, { panicMode: panicDetected });
-  };
 
-  const handleStartRecording = async () => {
-    haptic.light();
-    if (!session) return;
-    setSession((prev) => prev ? { ...prev, phase: "recording" } : prev);
-    stopSpeech();
+    const newSession: Session = {
+      scenarioId,
+      phase: "intro",
+      feedback: "",
+      history: [],
+    };
+    setSession(newSession);
+    sessionRef.current = newSession;
+
+    speak(scenario.prompt, () => {
+      startListening(newSession);
+    });
+  }, []);
+
+  // ── Start listening ───────────────────────────────────────────────────────────
+  const startListening = useCallback(async (currentSession: Session) => {
+    if (!micAvailable) return;
+    const updated = { ...currentSession, phase: "listening" as SessionPhase };
+    setSession(updated);
+    sessionRef.current = updated;
+
     try {
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record();
+      if (silenceTimer.current) clearTimeout(silenceTimer.current);
+      silenceTimer.current = setTimeout(() => stopAndEvaluate(), SILENCE_MS);
     } catch {
-      setSession((prev) => prev ? { ...prev, phase: "prompt" } : prev);
+      setSession((s) => s ? { ...s, phase: "feedback", feedback: "Microphone unavailable." } : null);
     }
-  };
+  }, [micAvailable]);
 
-  const handleStopRecording = async () => {
-    haptic.medium();
-    if (!session) return;
-    setSession((prev) => prev ? { ...prev, phase: "evaluating" } : prev);
+  // ── Stop and evaluate ─────────────────────────────────────────────────────────
+  const stopAndEvaluate = useCallback(async () => {
+    if (silenceTimer.current) { clearTimeout(silenceTimer.current); silenceTimer.current = null; }
+    const current = sessionRef.current;
+    if (!current) return;
+
+    const updated = { ...current, phase: "processing" as SessionPhase };
+    setSession(updated);
+    sessionRef.current = updated;
+    Speech.stop();
+
     try {
       await audioRecorder.stop();
-      const uri: string = String(audioRecorder.uri ?? "");
-      let transcript: string | null = null;
-      if (uri) {
-        transcript = await transcribeAudioUri(uri);
+      const uri = audioRecorder.uri;
+      const audioUrl = uri ? await uploadAudioUri(uri) : null;
+
+      const scenario = TRAINING_SCENARIOS.find((s) => s.id === current.scenarioId);
+      const systemContext = scenario
+        ? `You are a training evaluator for emergency preparedness. The scenario is: "${scenario.title}". Evaluate the user's response and give brief, encouraging feedback. Keep it under 2 sentences.`
+        : undefined;
+
+      const response = await chatWithOperatorLocal(current.history, audioUrl ?? undefined, systemContext);
+
+      const newHistory: ConversationMessage[] = [
+        ...current.history,
+        ...(response.transcript ? [{ role: "user" as const, content: response.transcript }] : []),
+        { role: "assistant" as const, content: response.spoken },
+      ];
+
+      // Check if correct (keyword match)
+      const transcript = (response.transcript || "").toLowerCase();
+      const isCorrect = scenario?.correctKeywords?.some((kw) => transcript.includes(kw.toLowerCase())) ?? false;
+
+      if (isCorrect) {
+        const newCompleted = [...completedIds, current.scenarioId].filter((v, i, a) => a.indexOf(v) === i);
+        setCompletedIds(newCompleted);
+        await AsyncStorage.setItem(COMPLETED_KEY, JSON.stringify(newCompleted));
       }
-      if (!transcript) {
-        setSession((prev) => prev ? { ...prev, phase: "prompt" } : prev);
-        return;
-      }
-      const scenario = TRAINING_SCENARIOS.find((s) => s.id === session.scenarioId);
-      const result = await analyzeEmergency(
-        `Training evaluation. Scenario: "${scenario?.prompt}". Correct answer: "${session.correctAnswer}". User answered: "${transcript}". Rate as correct/partial/incorrect and give brief feedback.`
-      );
-      const evalText = result.spokenResponse.toLowerCase();
-      const evaluation: "correct" | "partial" | "incorrect" =
-        evalText.includes("correct") ? "correct"
-        : evalText.includes("partial") ? "partial"
-        : "incorrect";
-      if (evaluation === "correct") {
-        haptic.success();
-        const next = [...new Set([...completedIds, session.scenarioId])];
-        setCompletedIds(next);
-        await AsyncStorage.setItem(COMPLETED_KEY, JSON.stringify(next));
-      } else {
-        haptic.error();
-      }
-      setSession((prev) => prev ? { ...prev, phase: "result", evaluation, feedback: result.spokenResponse } : prev);
+
+      const withFeedback = { ...updated, phase: "feedback" as SessionPhase, feedback: response.spoken, history: newHistory };
+      setSession(withFeedback);
+      sessionRef.current = withFeedback;
+
+      speak(response.spoken, () => {
+        // After feedback, auto-listen again for next answer
+        setTimeout(() => {
+          if (sessionRef.current?.phase === "feedback") {
+            startListening(withFeedback);
+          }
+        }, 800);
+      });
     } catch {
-      setSession((prev) => prev ? { ...prev, phase: "prompt" } : prev);
+      const err = { ...updated, phase: "feedback" as SessionPhase, feedback: "Could not process. Try again." };
+      setSession(err);
+      speak("I couldn't process that. Please try again.", () => startListening(err));
     }
-  };
+  }, [completedIds, startListening]);
 
-  const handleEndSession = () => {
-    stopSpeech();
+  // ── End session ───────────────────────────────────────────────────────────────
+  const endSession = useCallback(() => {
+    Speech.stop();
+    if (silenceTimer.current) clearTimeout(silenceTimer.current);
+    haptic.light();
     setSession(null);
-  };
+  }, []);
 
-  // ── Session view ─────────────────────────────────────────────────────────────
+  // ── Render: Active session ────────────────────────────────────────────────────
   if (session) {
     const scenario = TRAINING_SCENARIOS.find((s) => s.id === session.scenarioId);
+    const phaseLabel =
+      session.phase === "intro" ? "🔊 Reading scenario…"
+      : session.phase === "listening" ? "~~~~ listening ~~~~"
+      : session.phase === "processing" ? "● processing…"
+      : "🔊 feedback…";
+
     return (
-      <ScreenContainer containerClassName="bg-background" edges={["top", "left", "right", "bottom"]}>
+      <ScreenContainer containerClassName="bg-[#0a0f14]" edges={["top", "left", "right", "bottom"]}>
         <View style={styles.sessionContainer}>
-          <Pressable onPress={handleEndSession} style={styles.backBtn}>
-            <Text style={styles.backBtnText}>← Back</Text>
-          </Pressable>
-
-          <Text style={styles.sessionTitle}>{scenario?.title}</Text>
-
-          {/* Prompt */}
-          <View style={styles.promptCard}>
-            <Text style={styles.promptText}>{scenario?.prompt}</Text>
+          <View style={styles.sessionHeader}>
+            <Text style={styles.sessionTitle}>{scenario?.title ?? "Training"}</Text>
+            <Pressable onPress={endSession} style={styles.endBtn}>
+              <Text style={styles.endBtnText}>End</Text>
+            </Pressable>
           </View>
 
-          {session.phase === "prompt" && (
-            <Pressable
-              onPress={handleStartRecording}
-              style={({ pressed }) => [styles.recordBtn, pressed && { opacity: 0.85 }]}
-            >
-              <Text style={styles.recordBtnText}>🎙 Speak Your Answer</Text>
-            </Pressable>
-          )}
-
-          {session.phase === "recording" && (
-            <Pressable
-              onPress={handleStopRecording}
-              style={({ pressed }) => [styles.stopBtn, pressed && { opacity: 0.85 }]}
-            >
-              <Text style={styles.stopBtnText}>⏹ Stop Recording</Text>
-            </Pressable>
-          )}
-
-          {session.phase === "evaluating" && (
-            <View style={styles.evaluatingRow}>
-              <ActivityIndicator color="#4a9d9c" size="large" />
-              <Text style={styles.evaluatingText}>Evaluating…</Text>
-            </View>
-          )}
-
-          {session.phase === "result" && (
-            <>
-              <View style={[
-                styles.resultBadge,
-                session.evaluation === "correct" ? styles.resultCorrect
-                : session.evaluation === "partial" ? styles.resultPartial
-                : styles.resultIncorrect,
-              ]}>
-                <Text style={styles.resultBadgeText}>
-                  {session.evaluation === "correct" ? "✅ Correct" : session.evaluation === "partial" ? "⚠️ Partial" : "❌ Incorrect"}
-                </Text>
+          <View style={styles.sessionBody}>
+            <Text style={styles.sessionPrompt}>{scenario?.prompt ?? ""}</Text>
+            <Text style={[
+              styles.phaseLabel,
+              session.phase === "listening" && styles.phaseListen,
+              session.phase === "processing" && styles.phaseProcess,
+            ]}>
+              {phaseLabel}
+            </Text>
+            {session.feedback ? (
+              <View style={styles.feedbackCard}>
+                <Text style={styles.feedbackText}>{session.feedback}</Text>
               </View>
-              <Text style={styles.feedbackText}>{session.feedback}</Text>
-              <Text style={styles.correctAnswerLabel}>Correct answer:</Text>
-              <Text style={styles.correctAnswerText}>{session.correctAnswer}</Text>
-              <Pressable
-                onPress={handleEndSession}
-                style={({ pressed }) => [styles.doneBtn, pressed && { opacity: 0.85 }]}
-              >
-                <Text style={styles.doneBtnText}>Done</Text>
-              </Pressable>
-            </>
-          )}
+            ) : null}
+          </View>
         </View>
       </ScreenContainer>
     );
   }
 
-  // ── Main prepare screen ───────────────────────────────────────────────────────
-  const kitProgress = checkedIds.length;
-  const kitTotal = KIT_ITEMS.length;
-
+  // ── Render: Scenario list ─────────────────────────────────────────────────────
   return (
-    <ScreenContainer containerClassName="bg-background">
+    <ScreenContainer containerClassName="bg-[#0a0f14]" edges={["top", "left", "right"]}>
       <View style={styles.container}>
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>🛡 Prepare</Text>
+        <Text style={styles.screenTitle}>Training</Text>
+        <Text style={styles.screenSub}>Tap a scenario to begin — AI guides you by voice</Text>
+
+        <View style={styles.cardGrid}>
+          {TRAINING_SCENARIOS.map((scenario) => {
+            const done = completedIds.includes(scenario.id);
+            const progress = done ? 1 : 0;
+            return (
+              <Pressable
+                key={scenario.id}
+                onPress={() => startScenario(scenario.id)}
+                style={({ pressed }) => [styles.card, pressed && { opacity: 0.75 }]}
+              >
+                <View style={styles.cardTop}>
+                  <View style={[styles.tag, { backgroundColor: scenario.tagColor + "33" }]}>
+                    <Text style={[styles.tagText, { color: scenario.tagColor }]}>{scenario.tag}</Text>
+                  </View>
+                  {done && <Text style={styles.doneCheck}>✓</Text>}
+                </View>
+                <Text style={styles.cardTitle}>{scenario.title}</Text>
+                <Text style={styles.cardDesc} numberOfLines={2}>{scenario.description}</Text>
+
+                {/* Progress bar — no numbers, no streak */}
+                <View style={styles.progressTrack}>
+                  <View style={[styles.progressFill, { width: `${progress * 100}%` as any, backgroundColor: scenario.tagColor }]} />
+                </View>
+              </Pressable>
+            );
+          })}
         </View>
-
-        {/* Tab switcher */}
-        <View style={styles.tabRow}>
-          <Pressable
-            onPress={() => setActiveTab("kit")}
-            style={[styles.tabBtn, activeTab === "kit" && styles.tabBtnActive]}
-          >
-            <Text style={[styles.tabBtnText, activeTab === "kit" && styles.tabBtnTextActive]}>My Kit</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setActiveTab("training")}
-            style={[styles.tabBtn, activeTab === "training" && styles.tabBtnActive]}
-          >
-            <Text style={[styles.tabBtnText, activeTab === "training" && styles.tabBtnTextActive]}>Training</Text>
-          </Pressable>
-        </View>
-
-        {/* Kit tab */}
-        {activeTab === "kit" && (
-          <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
-            <View style={styles.kitProgress}>
-              <Text style={styles.kitProgressText}>{kitProgress}/{kitTotal} items ready</Text>
-              <View style={styles.kitProgressBar}>
-                <View style={[styles.kitProgressFill, { width: `${(kitProgress / kitTotal) * 100}%` as any }]} />
-              </View>
-            </View>
-            {KIT_ITEMS.map((item) => {
-              const checked = checkedIds.includes(item.id);
-              return (
-                <Pressable
-                  key={item.id}
-                  onPress={() => toggleKit(item.id)}
-                  style={({ pressed }) => [
-                    styles.kitItem,
-                    checked && styles.kitItemChecked,
-                    pressed && { opacity: 0.8 },
-                  ]}
-                >
-                  <View style={styles.kitItemLeft}>
-                    <Text style={styles.kitItemLabel}>{item.label}</Text>
-                    <Text style={styles.kitItemDesc}>{item.desc}</Text>
-                  </View>
-                  <View style={[styles.kitCheckbox, checked && styles.kitCheckboxChecked]}>
-                    {checked && <Text style={styles.kitCheckmark}>✓</Text>}
-                  </View>
-                </Pressable>
-              );
-            })}
-            <View style={{ height: 20 }} />
-          </ScrollView>
-        )}
-
-        {/* Training tab */}
-        {activeTab === "training" && (
-          <FlatList
-            data={TRAINING_SCENARIOS}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-            renderItem={({ item }) => {
-              const isCompleted = completedIds.includes(item.id);
-              return (
-                <Pressable
-                  onPress={() => handleStartScenario(item.id)}
-                  style={({ pressed }) => [
-                    styles.scenarioCard,
-                    pressed && { opacity: 0.8 },
-                    isCompleted && styles.scenarioCardDone,
-                  ]}
-                >
-                  <View style={styles.scenarioLeft}>
-                    <Text style={styles.scenarioTitle}>{item.title}</Text>
-                    <Text style={styles.scenarioDesc} numberOfLines={2}>{item.description}</Text>
-                  </View>
-                  <Text style={styles.scenarioIcon}>{isCompleted ? "✅" : "▶"}</Text>
-                </Pressable>
-              );
-            }}
-          />
-        )}
-
-        <Pressable
-          onPress={() => Linking.openURL("tel:103")}
-          style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
-        >
-          <Text style={styles.callText}>📞  Call 103</Text>
-        </Pressable>
       </View>
     </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 10 },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
-  headerTitle: { fontSize: 22, fontWeight: "800", color: "#FFFFFF" },
-
-  // Tab switcher
-  tabRow: { flexDirection: "row", backgroundColor: "#1d2e3d", borderRadius: 10, padding: 3, marginBottom: 14 },
-  tabBtn: { flex: 1, paddingVertical: 8, alignItems: "center", borderRadius: 8 },
-  tabBtnActive: { backgroundColor: "#0D6E6E" },
-  tabBtnText: { fontSize: 14, fontWeight: "600", color: "#8E9BAA" },
-  tabBtnTextActive: { color: "#FFFFFF" },
-
-  // Kit
-  kitProgress: { marginBottom: 12 },
-  kitProgressText: { fontSize: 13, color: "#8E9BAA", marginBottom: 6, fontWeight: "600" },
-  kitProgressBar: { height: 6, backgroundColor: "#1d2e3d", borderRadius: 3, overflow: "hidden" },
-  kitProgressFill: { height: 6, backgroundColor: "#22C55E", borderRadius: 3 },
-  kitItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#1d2e3d",
-    borderRadius: 12,
+  container: {
+    flex: 1,
     paddingHorizontal: 16,
-    paddingVertical: 14,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: "#354656",
+    paddingTop: 10,
   },
-  kitItemChecked: { borderColor: "#22C55E", backgroundColor: "#0D2A1A" },
-  kitItemLeft: { flex: 1 },
-  kitItemLabel: { fontSize: 15, fontWeight: "700", color: "#FFFFFF", marginBottom: 2 },
-  kitItemDesc: { fontSize: 12, color: "#8E9BAA" },
-  kitCheckbox: {
-    width: 28, height: 28, borderRadius: 14,
-    borderWidth: 2, borderColor: "#354656",
-    alignItems: "center", justifyContent: "center",
+  screenTitle: {
+    fontSize: 28,
+    fontWeight: "900",
+    color: "#FFFFFF",
+    letterSpacing: 2,
+    marginBottom: 4,
   },
-  kitCheckboxChecked: { backgroundColor: "#22C55E", borderColor: "#22C55E" },
-  kitCheckmark: { fontSize: 16, color: "#FFFFFF", fontWeight: "900" },
-
-  // Training list
-  listContent: { gap: 10, paddingBottom: 12 },
-  scenarioCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#1d2e3d",
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    borderWidth: 1,
-    borderColor: "#354656",
+  screenSub: {
+    fontSize: 13,
+    color: "#687076",
+    marginBottom: 16,
   },
-  scenarioCardDone: { borderColor: "#22C55E", backgroundColor: "#0D2A1A" },
-  scenarioLeft: { flex: 1 },
-  scenarioTitle: { fontSize: 16, fontWeight: "700", color: "#FFFFFF", marginBottom: 4 },
-  scenarioDesc: { fontSize: 13, color: "#8E9BAA", lineHeight: 18 },
-  scenarioIcon: { fontSize: 22, marginLeft: 12 },
-
-  // Session
-  sessionContainer: { flex: 1, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20 },
-  backBtn: { paddingVertical: 8, paddingRight: 12, alignSelf: "flex-start" },
-  backBtnText: { fontSize: 16, color: "#4a9d9c", fontWeight: "600" },
-  sessionTitle: { fontSize: 20, fontWeight: "800", color: "#FFFFFF", marginBottom: 16, marginTop: 8 },
-  promptCard: {
-    backgroundColor: "#1d2e3d",
+  cardGrid: {
+    gap: 12,
+  },
+  card: {
+    backgroundColor: "#111820",
     borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
+    padding: 16,
     borderWidth: 1,
-    borderColor: "#354656",
+    borderColor: "#1C2B38",
+    gap: 6,
   },
-  promptText: { fontSize: 17, color: "#FFFFFF", lineHeight: 26, fontWeight: "600" },
-  recordBtn: {
-    backgroundColor: "#0D6E6E",
-    borderRadius: 14,
-    paddingVertical: 18,
+  cardTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
   },
-  recordBtnText: { fontSize: 18, fontWeight: "800", color: "#FFFFFF" },
-  stopBtn: {
-    backgroundColor: "#FF3D3D",
-    borderRadius: 14,
-    paddingVertical: 18,
-    alignItems: "center",
+  tag: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
-  stopBtnText: { fontSize: 18, fontWeight: "800", color: "#FFFFFF" },
-  evaluatingRow: { alignItems: "center", gap: 12, marginTop: 20 },
-  evaluatingText: { fontSize: 16, color: "#8E9BAA", fontWeight: "600" },
-  resultBadge: { borderRadius: 12, paddingVertical: 12, paddingHorizontal: 20, alignItems: "center", marginBottom: 16 },
-  resultCorrect: { backgroundColor: "#0D2A1A", borderWidth: 1, borderColor: "#22C55E" },
-  resultPartial: { backgroundColor: "#1A1400", borderWidth: 1, borderColor: "#F59E0B" },
-  resultIncorrect: { backgroundColor: "#1A0000", borderWidth: 1, borderColor: "#FF3D3D" },
-  resultBadgeText: { fontSize: 18, fontWeight: "800", color: "#FFFFFF" },
-  feedbackText: { fontSize: 15, color: "#e0e0e0", lineHeight: 22, marginBottom: 12 },
-  correctAnswerLabel: { fontSize: 13, color: "#8E9BAA", fontWeight: "600", marginBottom: 4 },
-  correctAnswerText: { fontSize: 14, color: "#4a9d9c", lineHeight: 20, marginBottom: 20 },
-  doneBtn: {
-    backgroundColor: "#22C55E",
-    borderRadius: 14,
-    paddingVertical: 16,
-    alignItems: "center",
+  tagText: {
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.5,
   },
-  doneBtnText: { fontSize: 18, fontWeight: "800", color: "#FFFFFF" },
-
-  // Call bar
-  callBar: {
-    backgroundColor: "#22C55E",
-    borderRadius: 14,
-    paddingVertical: 16,
-    alignItems: "center",
-    marginTop: 8,
+  doneCheck: {
+    fontSize: 18,
+    color: "#22C55E",
+    fontWeight: "900",
   },
-  callText: { fontSize: 18, fontWeight: "800", color: "#FFFFFF", letterSpacing: 1 },
+  cardTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#FFFFFF",
+  },
+  cardDesc: {
+    fontSize: 13,
+    color: "#687076",
+    lineHeight: 18,
+  },
+  progressTrack: {
+    height: 3,
+    backgroundColor: "#1C2B38",
+    borderRadius: 2,
+    marginTop: 4,
+    overflow: "hidden",
+  },
+  progressFill: {
+    height: 3,
+    borderRadius: 2,
+  },
+  // Session
+  sessionContainer: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+  },
+  sessionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 24,
+  },
+  sessionTitle: {
+    fontSize: 20,
+    fontWeight: "900",
+    color: "#FFFFFF",
+    letterSpacing: 1,
+  },
+  endBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#334155",
+  },
+  endBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#9BA1A6",
+  },
+  sessionBody: {
+    flex: 1,
+    justifyContent: "center",
+    gap: 24,
+  },
+  sessionPrompt: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#FFFFFF",
+    textAlign: "center",
+    lineHeight: 32,
+  },
+  phaseLabel: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#9BA1A6",
+    textAlign: "center",
+    letterSpacing: 2,
+  },
+  phaseListen: {
+    color: "#4a9d9c",
+  },
+  phaseProcess: {
+    color: "#F59E0B",
+  },
+  feedbackCard: {
+    backgroundColor: "#111820",
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "#1C2B38",
+  },
+  feedbackText: {
+    fontSize: 16,
+    color: "#ECEDEE",
+    lineHeight: 24,
+    textAlign: "center",
+  },
 });

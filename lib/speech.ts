@@ -24,7 +24,7 @@ export const speakInstruction = async (
   }
   Speech.stop();
   Speech.speak(text, {
-    rate: options?.panicMode ? 0.8 : (options?.rate ?? 0.9),
+    rate: options?.panicMode ? 0.8 : (options?.rate ?? 0.85),
     pitch: 1.0,
     language: "en-US",
     volume: 1.0,
