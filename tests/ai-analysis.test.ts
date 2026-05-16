@@ -1,15 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Mock fetch to simulate Gemma offline
+// Mock the modules that ai-analysis.ts imports from native/expo context
+vi.mock("@/constants/oauth", () => ({
+  getApiBaseUrl: () => "http://localhost:3000",
+}));
+
+vi.mock("@/lib/_core/auth", () => ({
+  getSessionToken: async () => null,
+}));
+
+// Mock fetch to simulate server offline (falls back to keyword detection)
 global.fetch = vi.fn().mockRejectedValue(new Error("Network error"));
 
-// We need to import after mocking
 const { analyzeEmergency } = await import("../lib/ai-analysis");
 
-describe("AI Analysis — Keyword Fallback", () => {
+describe("AI Analysis — Keyword Fallback (server offline)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    global.fetch = vi.fn().mockRejectedValue(new Error("Gemma offline"));
+    global.fetch = vi.fn().mockRejectedValue(new Error("Server offline"));
   });
 
   it("detects fire from transcript", async () => {
@@ -70,29 +78,52 @@ describe("AI Analysis — Keyword Fallback", () => {
   });
 });
 
-describe("AI Analysis — Gemma API (mocked success)", () => {
-  it("parses Gemma API response correctly", async () => {
-    const mockResponse: import("../lib/ai-analysis").AIAnalysisResult = {
+describe("AI Analysis — Server LLM (mocked success)", () => {
+  it("parses server LLM response correctly via tRPC format", async () => {
+    const mockData = {
       emergencyType: "fire",
       severity: "critical",
       firstInstruction: "Cover mouth with cloth.",
       shouldCall103: true,
       shouldSMSFamily: true,
-      nearestHelp: true,
+      nearestHelp: "fire station",
       spokenResponse: "Fire detected. Move low and exit now.",
     };
 
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        choices: [{ message: { content: JSON.stringify(mockResponse) } }],
+        result: {
+          data: {
+            json: {
+              success: true,
+              data: mockData,
+              raw: JSON.stringify(mockData),
+            },
+          },
+        },
       }),
     });
 
-    const { analyzeEmergency: analyzeWithAPI } = await import("../lib/ai-analysis");
-    const result = await analyzeWithAPI("there is a fire in the building");
+    const { analyzeEmergency: analyzeWithServer } = await import("../lib/ai-analysis");
+    const result = await analyzeWithServer("there is a fire in the building");
     expect(result.emergencyType).toBe("fire");
     expect(result.severity).toBe("critical");
     expect(result.shouldCall103).toBe(true);
+    expect(result.nearestHelp).toBe(true); // non-empty string → truthy → Boolean = true
+  });
+
+  it("falls back to keywords when server returns success:false", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        result: { data: { json: { success: false, data: null, raw: "" } } },
+      }),
+    });
+
+    const { analyzeEmergency: analyzeWithFallback } = await import("../lib/ai-analysis");
+    const result = await analyzeWithFallback("fire everywhere");
+    // Keyword fallback should still detect fire
+    expect(result.emergencyType).toBe("fire");
   });
 });

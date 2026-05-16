@@ -1,5 +1,6 @@
-import { Text, View, Pressable, Linking, StyleSheet } from "react-native";
+import { Text, View, Pressable, Linking, StyleSheet, Animated } from "react-native";
 import { useRouter } from "expo-router";
+import { useRef, useState } from "react";
 import { ScreenContainer } from "@/components/screen-container";
 import { DISASTER_BUTTONS } from "@/constants/emergency-data";
 import { haptic } from "@/lib/haptics";
@@ -10,9 +11,16 @@ export default function HomeScreen() {
   const router = useRouter();
   const { settings } = useSettings();
   const { blackoutMode, toggleBlackoutMode, batteryLevel } = useAppContext();
+  const [showManual, setShowManual] = useState(false);
+  const scaleAnim = useRef(new Animated.Value(1)).current;
 
   const handleSOS = () => {
     haptic.heavy();
+    // Pulse animation on press
+    Animated.sequence([
+      Animated.timing(scaleAnim, { toValue: 0.93, duration: 80, useNativeDriver: true }),
+      Animated.timing(scaleAnim, { toValue: 1, duration: 120, useNativeDriver: true }),
+    ]).start();
     router.push("/sos");
   };
 
@@ -66,7 +74,7 @@ export default function HomeScreen() {
           )}
         </View>
 
-        {/* No-contact warning — one line only */}
+        {/* No-contact warning */}
         {!settings.familyNumber && (
           <Pressable
             onPress={() => router.push("/(tabs)/settings")}
@@ -76,32 +84,49 @@ export default function HomeScreen() {
           </Pressable>
         )}
 
-        {/* SOS button — dominant element */}
+        {/* SOS button — dominant, takes most of the screen */}
         <View style={styles.sosWrap}>
-          <Pressable
-            onPress={handleSOS}
-            style={({ pressed }) => [
-              styles.sosBtn,
-              pressed && { transform: [{ scale: 0.95 }] },
-            ]}
-          >
-            <Text style={styles.sosLabel}>SOS</Text>
-            <Text style={styles.sosHint}>PRESS & SPEAK</Text>
-          </Pressable>
+          <Text style={styles.sosSubtitle}>Speak to AI operator</Text>
+          <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+            <Pressable
+              onPress={handleSOS}
+              style={({ pressed }) => [
+                styles.sosBtn,
+                pressed && { opacity: 0.9 },
+              ]}
+            >
+              <Text style={styles.sosLabel}>SOS</Text>
+              <Text style={styles.sosHint}>PRESS & SPEAK</Text>
+            </Pressable>
+          </Animated.View>
+          <Text style={styles.sosDesc}>AI will guide you step by step</Text>
         </View>
 
-        {/* Disaster grid — 2 columns, large tap targets */}
-        <View style={styles.grid}>
-          {DISASTER_BUTTONS.map((item) => (
-            <Pressable
-              key={item.type}
-              onPress={() => handleDisaster(item.type)}
-              style={({ pressed }) => [styles.gridItem, pressed && { opacity: 0.65 }]}
-            >
-              <Text style={styles.gridEmoji}>{item.emoji}</Text>
-              <Text style={styles.gridLabel}>{item.label}</Text>
-            </Pressable>
-          ))}
+        {/* Manual mode — collapsed by default */}
+        <View style={styles.manualSection}>
+          <Pressable
+            onPress={() => { haptic.light(); setShowManual(v => !v); }}
+            style={({ pressed }) => [styles.manualToggle, pressed && { opacity: 0.7 }]}
+          >
+            <Text style={styles.manualToggleText}>
+              {showManual ? "▲ Hide manual mode" : "▾ Can't speak? Manual mode"}
+            </Text>
+          </Pressable>
+
+          {showManual && (
+            <View style={styles.grid}>
+              {DISASTER_BUTTONS.map((item) => (
+                <Pressable
+                  key={item.type}
+                  onPress={() => handleDisaster(item.type)}
+                  style={({ pressed }) => [styles.gridItem, pressed && { opacity: 0.65 }]}
+                >
+                  <Text style={styles.gridEmoji}>{item.emoji}</Text>
+                  <Text style={styles.gridLabel}>{item.label}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
         </View>
 
         {/* Call bar — always visible at bottom */}
@@ -162,45 +187,70 @@ const styles = StyleSheet.create({
     color: "#FF3D3D",
     fontWeight: "700",
   },
+  // SOS — large and dominant
   sosWrap: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    minHeight: 150,
+    gap: 16,
+  },
+  sosSubtitle: {
+    fontSize: 15,
+    color: "#9BA1A6",
+    fontWeight: "500",
+    letterSpacing: 0.5,
   },
   sosBtn: {
-    width: 150,
-    height: 150,
-    borderRadius: 75,
+    width: 240,
+    height: 240,
+    borderRadius: 120,
     backgroundColor: "#FF3D3D",
     justifyContent: "center",
     alignItems: "center",
     shadowColor: "#FF3D3D",
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.7,
-    shadowRadius: 24,
-    elevation: 12,
+    shadowOpacity: 0.75,
+    shadowRadius: 40,
+    elevation: 20,
   },
   sosLabel: {
-    fontSize: 40,
+    fontSize: 56,
     fontWeight: "900",
     color: "#FFFFFF",
-    letterSpacing: 4,
+    letterSpacing: 6,
   },
   sosHint: {
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: "700",
     color: "#FFFFFF",
-    marginTop: 4,
+    marginTop: 6,
     opacity: 0.85,
-    letterSpacing: 1,
+    letterSpacing: 2,
+  },
+  sosDesc: {
+    fontSize: 13,
+    color: "#687076",
+    fontWeight: "400",
+  },
+  // Manual section
+  manualSection: {
+    marginBottom: 10,
+  },
+  manualToggle: {
+    alignItems: "center",
+    paddingVertical: 10,
+  },
+  manualToggleText: {
+    fontSize: 13,
+    color: "#687076",
+    fontWeight: "600",
   },
   grid: {
     flexDirection: "row",
     flexWrap: "wrap",
     justifyContent: "space-between",
     gap: 8,
-    marginBottom: 10,
+    marginTop: 4,
   },
   gridItem: {
     width: "31%",
@@ -212,14 +262,15 @@ const styles = StyleSheet.create({
     borderColor: "#354656",
   },
   gridEmoji: {
-    fontSize: 30,
-    marginBottom: 6,
+    fontSize: 28,
+    marginBottom: 5,
   },
   gridLabel: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "700",
     color: "#FFFFFF",
   },
+  // Call bar
   callBar: {
     backgroundColor: "#22C55E",
     borderRadius: 14,
@@ -242,15 +293,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   blackoutSOS: {
-    width: 170,
-    height: 170,
-    borderRadius: 85,
+    width: 200,
+    height: 200,
+    borderRadius: 100,
     backgroundColor: "#FF3D3D",
     justifyContent: "center",
     alignItems: "center",
   },
   blackoutSOSText: {
-    fontSize: 48,
+    fontSize: 56,
     fontWeight: "900",
     color: "#FFF",
     letterSpacing: 4,

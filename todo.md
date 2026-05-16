@@ -97,3 +97,12 @@
 - [x] Wire mock demo mode (4 scenarios accessible without live AI)
 - [x] TypeScript check passes
 - [x] All mock scenarios render correctly
+
+## AI Fix + UX Update (v1.5)
+
+- [x] Replace localhost:8080 Gemma call with Manus built-in LLM (server tRPC route)
+- [x] Remove 6-card disaster grid from Home screen
+- [x] Add "Manual mode" collapsed fallback (small link) for when voice fails
+- [x] Make SOS button significantly larger (240px+)
+- [x] Test AI response end-to-end
+- [x] TypeScript check passes
