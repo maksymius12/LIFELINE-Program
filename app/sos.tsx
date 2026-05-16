@@ -21,7 +21,8 @@ import {
 import { ScreenContainer } from "@/components/screen-container";
 import { haptic } from "@/lib/haptics";
 import { speakInstruction, stopSpeech } from "@/lib/speech";
-import { analyzeEmergency } from "@/lib/ai-analysis";
+import { analyzeEmergency, analyzeForEScript } from "@/lib/ai-analysis";
+import { transcribeAudioUri } from "@/lib/transcription";
 import { sendEmergencySMS } from "@/lib/family-sms";
 import { useAppContext } from "@/lib/app-context";
 import {
@@ -152,21 +153,13 @@ export default function SOSScreen() {
   const stopListening = async () => {
     haptic.medium();
     setSosState("processing");
-    setStatusText("Analyzing…");
+    setStatusText("Transcribing…");
     stopSpeech();
     try {
       await audioRecorder.stop();
       const uri = audioRecorder.uri;
-      let transcript = "emergency help needed";
-      if (uri && Platform.OS !== "web") {
-        try {
-          const { exec } = require("child_process");
-          const { promisify } = require("util");
-          const execAsync = promisify(exec);
-          const { stdout } = await execAsync(`manus-speech-to-text "${uri}"`);
-          transcript = stdout.trim() || transcript;
-        } catch { /* use fallback */ }
-      }
+      const transcript = uri ? await transcribeAudioUri(uri) : "emergency help needed";
+      setStatusText("Analyzing…");
       await processTranscript(transcript);
     } catch {
       setErrorText("Recording failed — select type manually");
@@ -223,12 +216,28 @@ export default function SOSScreen() {
     }
   };
 
-  /** Called when user completes an EScript action — feed result back to AI */
-  const handleScriptComplete = (context: string) => {
+  /** Called when user completes an EScript action — feed result back to AI in agentic loop */
+  const handleScriptComplete = async (context: string) => {
     setActiveScript(null);
     setSosState("processing");
-    setStatusText("Processing…");
+    setStatusText("Continuing…");
     setChatHistory((prev) => [...prev, { role: "user", text: context }]);
+
+    // Try to continue the agentic E-Script loop first
+    try {
+      const rawEScript = await analyzeForEScript(context);
+      if (rawEScript) {
+        const result = parseAndExecute(rawEScript);
+        if (result.success) {
+          speakInstruction(result.script.voice_backup, { panicMode: panicDetected });
+          setActiveScript(result.script);
+          setSosState("response");
+          return;
+        }
+      }
+    } catch { /* fall through */ }
+
+    // Fallback: treat context as a plain transcript for classic response
     processTranscript(context);
   };
 

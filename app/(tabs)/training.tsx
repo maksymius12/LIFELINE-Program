@@ -22,6 +22,7 @@ import { haptic } from "@/lib/haptics";
 import { speakInstruction, stopSpeech } from "@/lib/speech";
 import { analyzeEmergency } from "@/lib/ai-analysis";
 import { useAppContext } from "@/lib/app-context";
+import { transcribeAudioUri } from "@/lib/transcription";
 
 const STREAK_KEY = "training_streak";
 const COMPLETED_KEY = "training_completed";
@@ -84,16 +85,7 @@ export default function TrainingScreen() {
     try {
       await audioRecorder.stop();
       const uri = audioRecorder.uri;
-      let transcript = "I don't know";
-      if (uri && Platform.OS !== "web") {
-        try {
-          const { exec } = require("child_process");
-          const { promisify } = require("util");
-          const execAsync = promisify(exec);
-          const { stdout } = await execAsync(`manus-speech-to-text "${uri}"`);
-          transcript = stdout.trim() || transcript;
-        } catch { /* use fallback */ }
-      }
+      const transcript = uri ? await transcribeAudioUri(uri) : "I don't know";
       await evaluateAnswer(transcript);
     } catch {
       setSession((prev) => prev ? { ...prev, phase: "prompt" } : prev);

@@ -2,9 +2,11 @@ import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
+import multer from "multer";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { registerStorageProxy } from "./storageProxy";
+import { storagePut } from "../storage";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 
@@ -57,6 +59,23 @@ async function startServer() {
 
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+
+  // ── Audio upload endpoint ──────────────────────────────────────────────────
+  // Accepts multipart/form-data with field "audio", stores to S3, returns URL.
+  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+  app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
+    try {
+      if (!req.file) { res.status(400).json({ error: "No audio file provided" }); return; }
+      const ext = req.file.originalname.split(".").pop() ?? "m4a";
+      const key = `audio/recording_${Date.now()}.${ext}`;
+      const { url } = await storagePut(key, req.file.buffer, req.file.mimetype || "audio/m4a");
+      const host = req.headers.origin ?? `http://localhost:${process.env.PORT ?? 3000}`;
+      res.json({ url: `${host}${url}` });
+    } catch (err: any) {
+      console.error("[audio-upload] error:", err);
+      res.status(500).json({ error: err?.message ?? "Upload failed" });
+    }
+  });
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, timestamp: Date.now() });
