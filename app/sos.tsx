@@ -1,3 +1,15 @@
+/**
+ * SOS Screen — 911-style AI Operator Call
+ *
+ * The AI acts as a 911 dispatcher:
+ *   1. User presses SOS → AI greets: "LIFELINE. What's your emergency?"
+ *   2. User speaks → audio uploaded → Whisper transcribes → LLM responds
+ *   3. AI speaks response via TTS + shows instruction on screen
+ *   4. User can speak again for follow-up turns (continuous conversation)
+ *   5. AI may trigger: Call 103, SMS family, show step-by-step guide
+ *
+ * On web or when mic is unavailable, a text input fallback is shown.
+ */
 import {
   Text,
   View,
@@ -7,8 +19,10 @@ import {
   Animated,
   Platform,
   ScrollView,
+  TextInput,
+  KeyboardAvoidingView,
 } from "react-native";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "expo-router";
 import { useKeepAwake } from "expo-keep-awake";
 import {
@@ -21,56 +35,76 @@ import {
 import { ScreenContainer } from "@/components/screen-container";
 import { haptic } from "@/lib/haptics";
 import { speakInstruction, stopSpeech } from "@/lib/speech";
-import { analyzeEmergency, analyzeForEScript } from "@/lib/ai-analysis";
-import { transcribeAudioUri } from "@/lib/transcription";
+import {
+  chatWithOperator,
+  type ConversationMessage,
+  type OperatorResponse,
+} from "@/lib/ai-analysis";
+import { uploadAudioUri } from "@/lib/transcription";
 import { sendEmergencySMS } from "@/lib/family-sms";
 import { useAppContext } from "@/lib/app-context";
-import {
-  parseAndExecute,
-  MOCK_SCENARIOS,
-  type EScript,
-} from "@/lib/EScriptEngine";
+import { parseAndExecute, MOCK_SCENARIOS, type EScript } from "@/lib/EScriptEngine";
 import { EScriptRenderer } from "@/components/escripts/EScriptRenderer";
 
-type SOSState = "idle" | "listening" | "processing" | "response";
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-// Conversation message for chat fallback
-interface ChatMessage {
+type CallState = "idle" | "connecting" | "listening" | "processing" | "active";
+
+interface DisplayMessage {
   role: "ai" | "user";
   text: string;
+  instruction?: string;
 }
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function SOSScreen() {
   useKeepAwake();
   const router = useRouter();
   const { panicDetected, registerTap, animationsEnabled } = useAppContext();
 
-  const [sosState, setSosState] = useState<SOSState>("idle");
-  const [statusText, setStatusText] = useState("Press and speak");
+  const [callState, setCallState] = useState<CallState>("idle");
+  const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  const [history, setHistory] = useState<ConversationMessage[]>([]);
+  const [currentInstruction, setCurrentInstruction] = useState<string>("");
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [micAvailable, setMicAvailable] = useState(true);
+  const [textInput, setTextInput] = useState("");
   const [activeScript, setActiveScript] = useState<EScript | null>(null);
-  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [showMockMenu, setShowMockMenu] = useState(false);
+
+  const scrollRef = useRef<ScrollView>(null);
 
   // Animations
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const pulseLoop = useRef<Animated.CompositeAnimation | null>(null);
+  const waveAnims = useRef(Array.from({ length: 5 }, () => new Animated.Value(0.3))).current;
   const spinAnim = useRef(new Animated.Value(0)).current;
-  const spinLoop = useRef<Animated.CompositeAnimation | null>(null);
-  const waveAnims = useRef(
-    Array.from({ length: 5 }, () => new Animated.Value(0.3))
-  ).current;
+  const pulseLoop = useRef<Animated.CompositeAnimation | null>(null);
   const waveLoop = useRef<Animated.CompositeAnimation | null>(null);
+  const spinLoop = useRef<Animated.CompositeAnimation | null>(null);
 
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   useAudioRecorderState(audioRecorder);
 
+  // ── Permission setup ────────────────────────────────────────────────────────
+  useEffect(() => {
+    (async () => {
+      if (Platform.OS === "web") { setMicAvailable(false); return; }
+      const { granted } = await requestRecordingPermissionsAsync();
+      setMicAvailable(granted);
+      if (granted) {
+        await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
+      }
+    })();
+  }, []);
+
+  // ── Pulse animation (idle) ──────────────────────────────────────────────────
   useEffect(() => {
     if (!animationsEnabled) return;
-    if (sosState === "idle") {
+    if (callState === "idle") {
       pulseLoop.current = Animated.loop(
         Animated.sequence([
-          Animated.timing(pulseAnim, { toValue: 1.14, duration: 900, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1.12, duration: 900, useNativeDriver: true }),
           Animated.timing(pulseAnim, { toValue: 1, duration: 900, useNativeDriver: true }),
         ])
       );
@@ -80,10 +114,11 @@ export default function SOSScreen() {
       pulseAnim.setValue(1);
     }
     return () => pulseLoop.current?.stop();
-  }, [sosState, animationsEnabled]);
+  }, [callState, animationsEnabled]);
 
+  // ── Wave animation (listening) ──────────────────────────────────────────────
   useEffect(() => {
-    if (sosState === "listening" && animationsEnabled) {
+    if (callState === "listening" && animationsEnabled) {
       waveLoop.current = Animated.loop(
         Animated.parallel(
           waveAnims.map((anim, i) =>
@@ -105,12 +140,13 @@ export default function SOSScreen() {
       waveAnims.forEach((a) => a.setValue(0.3));
     }
     return () => waveLoop.current?.stop();
-  }, [sosState, animationsEnabled]);
+  }, [callState, animationsEnabled]);
 
+  // ── Spin animation (processing) ─────────────────────────────────────────────
   useEffect(() => {
-    if (sosState === "processing" && animationsEnabled) {
+    if (callState === "processing" && animationsEnabled) {
       spinLoop.current = Animated.loop(
-        Animated.timing(spinAnim, { toValue: 1, duration: 1000, useNativeDriver: true })
+        Animated.timing(spinAnim, { toValue: 1, duration: 900, useNativeDriver: true })
       );
       spinLoop.current.start();
     } else {
@@ -118,137 +154,196 @@ export default function SOSScreen() {
       spinAnim.setValue(0);
     }
     return () => spinLoop.current?.stop();
-  }, [sosState, animationsEnabled]);
+  }, [callState, animationsEnabled]);
 
+  // ── Scroll to bottom when new message arrives ───────────────────────────────
   useEffect(() => {
-    (async () => {
-      const { granted } = await requestRecordingPermissionsAsync();
-      if (!granted) setErrorText("Mic denied — voice unavailable");
-      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
-    })();
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+  }, [messages]);
+
+  // ─── Start the call ──────────────────────────────────────────────────────────
+  const startCall = useCallback(async () => {
+    haptic.heavy();
+    registerTap();
+    setCallState("connecting");
+    setMessages([]);
+    setHistory([]);
+    setCurrentInstruction("");
+    setErrorText(null);
+
+    // First turn: empty history → AI greets with "What's your emergency?"
+    try {
+      const response = await chatWithOperator([], undefined, undefined);
+      applyResponse(response, []);
+    } catch {
+      setErrorText("Cannot reach AI — check connection");
+      setCallState("idle");
+    }
   }, []);
 
-  const handleSOSPress = async () => {
-    registerTap();
-    if (sosState === "idle") await startListening();
-    else if (sosState === "listening") await stopListening();
-  };
+  // ─── Apply AI response to UI ─────────────────────────────────────────────────
+  const applyResponse = useCallback(
+    (response: OperatorResponse, currentHistory: ConversationMessage[]) => {
+      const aiMsg: DisplayMessage = {
+        role: "ai",
+        text: response.spoken,
+        instruction: response.instruction,
+      };
+      setMessages((prev) => [...prev, aiMsg]);
+      setCurrentInstruction(response.instruction);
 
-  const startListening = async () => {
-    haptic.heavy();
-    setSosState("listening");
-    setStatusText("Speak now");
-    setErrorText(null);
-    speakInstruction("Tell me what happened", { panicMode: panicDetected });
+      const newHistory: ConversationMessage[] = [
+        ...currentHistory,
+        { role: "assistant", content: response.spoken },
+      ];
+      setHistory(newHistory);
+
+      speakInstruction(response.spoken, { panicMode: panicDetected });
+
+      if (response.severity === "critical") haptic.error();
+      else haptic.success();
+
+      // Side effects
+      if (response.action === "CALL_103") {
+        setTimeout(() => Linking.openURL("tel:103"), 1500);
+      }
+      if (response.action === "SMS_FAMILY") {
+        sendEmergencySMS().catch(() => {});
+      }
+      if (response.action === "SHOW_STEPS" && response.steps.length > 0) {
+        // Convert steps to an EScript scheme
+        const schemeScript = JSON.stringify({
+          voice_backup: response.spoken,
+          action_type: "UI_SHOW_SCHEME",
+          payload: {
+            title: response.instruction,
+            steps: response.steps,
+            current_step: 0,
+            animation_type: "slide",
+          },
+        });
+        const parsed = parseAndExecute(schemeScript);
+        if (parsed.success) {
+          setActiveScript(parsed.script);
+          setCallState("active");
+          return;
+        }
+      }
+
+      setCallState("active");
+    },
+    [panicDetected]
+  );
+
+  // ─── Start recording a voice reply ──────────────────────────────────────────
+  const startListening = useCallback(async () => {
+    if (callState !== "active") return;
+    haptic.medium();
+    setCallState("listening");
+    stopSpeech();
     try {
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record();
     } catch {
-      setErrorText("Cannot record — check mic permission");
-      setSosState("idle");
-      setStatusText("Press and speak");
+      setErrorText("Mic unavailable — type your message below");
+      setCallState("active");
     }
-  };
+  }, [callState]);
 
-  const stopListening = async () => {
+  // ─── Stop recording and send to AI ──────────────────────────────────────────
+  const stopListeningAndSend = useCallback(async () => {
+    if (callState !== "listening") return;
     haptic.medium();
-    setSosState("processing");
-    setStatusText("Transcribing…");
+    setCallState("processing");
     stopSpeech();
+
     try {
       await audioRecorder.stop();
       const uri = audioRecorder.uri;
-      const transcript = uri ? await transcribeAudioUri(uri) : "emergency help needed";
-      setStatusText("Analyzing…");
-      await processTranscript(transcript);
-    } catch {
-      setErrorText("Recording failed — select type manually");
-      setSosState("idle");
-      setStatusText("Press and speak");
-    }
-  };
 
-  /**
-   * Core processing: sends transcript to AI, tries to parse as EScript.
-   * If EScript is valid → render agentic UI.
-   * If EScript fails → fall back to classic text response + navigate to Panic Mode.
-   */
-  const processTranscript = async (transcript: string) => {
-    try {
-      // Add user message to chat history
-      setChatHistory((prev) => [...prev, { role: "user", text: transcript }]);
+      // Upload audio to S3 so server can transcribe it
+      const audioUrl = uri ? await uploadAudioUri(uri) : null;
 
-      const result = await analyzeEmergency(transcript);
-      setSosState("response");
+      // Add placeholder user message while processing
+      setMessages((prev) => [...prev, { role: "user", text: "🎤 …" }]);
 
-      // Try to parse AI response as an EScript
-      const engineResult = parseAndExecute(JSON.stringify(result));
+      const response = await chatWithOperator(history, audioUrl ?? undefined, undefined);
 
-      if (engineResult.success) {
-        // Agentic UI mode — hide chat, render EScript component
-        speakInstruction(engineResult.script.voice_backup, { panicMode: panicDetected });
-        setActiveScript(engineResult.script);
-      } else {
-        // Fallback: classic text response
-        const responseText = result.spokenResponse;
-        setStatusText(responseText);
-        setChatHistory((prev) => [...prev, { role: "ai", text: responseText }]);
-        speakInstruction(responseText, { panicMode: panicDetected });
-
-        if (result.severity === "critical") haptic.error();
-        else haptic.success();
-
-        const actions: Promise<unknown>[] = [];
-        if (result.shouldSMSFamily) actions.push(sendEmergencySMS());
-        if (result.shouldCall103) actions.push(Linking.openURL("tel:103"));
-        await Promise.allSettled(actions);
-
-        const targetType = result.emergencyType !== "unknown" ? result.emergencyType : "injury";
-        setTimeout(() => {
-          stopSpeech();
-          router.push(`/panic?type=${targetType}`);
-        }, 2500);
+      // Replace placeholder with actual transcript if available
+      if (response.transcript) {
+        setMessages((prev) => {
+          const updated = [...prev];
+          const lastIdx = updated.length - 1;
+          if (updated[lastIdx]?.text === "🎤 …") {
+            updated[lastIdx] = { role: "user", text: response.transcript! };
+          }
+          return updated;
+        });
       }
+
+      const newHistory: ConversationMessage[] = [
+        ...history,
+        ...(response.transcript ? [{ role: "user" as const, content: response.transcript }] : []),
+      ];
+
+      applyResponse(response, newHistory);
     } catch {
-      setErrorText("AI failed — select type manually");
-      setSosState("idle");
-      setStatusText("Press and speak");
+      setErrorText("Failed to send — try typing below");
+      setCallState("active");
     }
-  };
+  }, [callState, history, applyResponse]);
 
-  /** Called when user completes an EScript action — feed result back to AI in agentic loop */
-  const handleScriptComplete = async (context: string) => {
-    setActiveScript(null);
-    setSosState("processing");
-    setStatusText("Continuing…");
-    setChatHistory((prev) => [...prev, { role: "user", text: context }]);
+  // ─── Send typed text ─────────────────────────────────────────────────────────
+  const sendText = useCallback(async () => {
+    const text = textInput.trim();
+    if (!text || callState !== "active") return;
+    setTextInput("");
+    haptic.light();
+    stopSpeech();
+    setCallState("processing");
 
-    // Try to continue the agentic E-Script loop first
+    const userMsg: DisplayMessage = { role: "user", text };
+    setMessages((prev) => [...prev, userMsg]);
+
+    const newHistory: ConversationMessage[] = [...history, { role: "user", content: text }];
+    setHistory(newHistory);
+
     try {
-      const rawEScript = await analyzeForEScript(context);
-      if (rawEScript) {
-        const result = parseAndExecute(rawEScript);
-        if (result.success) {
-          speakInstruction(result.script.voice_backup, { panicMode: panicDetected });
-          setActiveScript(result.script);
-          setSosState("response");
-          return;
-        }
+      const response = await chatWithOperator(newHistory);
+      applyResponse(response, newHistory);
+    } catch {
+      setErrorText("AI failed — try again");
+      setCallState("active");
+    }
+  }, [textInput, callState, history, applyResponse]);
+
+  // ─── EScript handlers ────────────────────────────────────────────────────────
+  const handleScriptComplete = useCallback(
+    async (context: string) => {
+      setActiveScript(null);
+      setCallState("processing");
+      stopSpeech();
+
+      const newHistory: ConversationMessage[] = [...history, { role: "user", content: context }];
+      setHistory(newHistory);
+      setMessages((prev) => [...prev, { role: "user", text: context }]);
+
+      try {
+        const response = await chatWithOperator(newHistory);
+        applyResponse(response, newHistory);
+      } catch {
+        setCallState("active");
       }
-    } catch { /* fall through */ }
+    },
+    [history, applyResponse]
+  );
 
-    // Fallback: treat context as a plain transcript for classic response
-    processTranscript(context);
-  };
-
-  /** Called when user dismisses the EScript UI */
-  const handleScriptDismiss = () => {
+  const handleScriptDismiss = useCallback(() => {
     setActiveScript(null);
-    setSosState("idle");
-    setStatusText("Press and speak");
-  };
+    setCallState("active");
+  }, []);
 
-  /** Load a mock scenario for demo purposes */
+  // ─── Mock demo ───────────────────────────────────────────────────────────────
   const handleMockScenario = (key: string) => {
     setShowMockMenu(false);
     haptic.medium();
@@ -258,7 +353,7 @@ export default function SOSScreen() {
     if (result.success) {
       speakInstruction(result.script.voice_backup, { panicMode: panicDetected });
       setActiveScript(result.script);
-      setSosState("response");
+      setCallState("active");
     }
   };
 
@@ -268,7 +363,13 @@ export default function SOSScreen() {
     router.back();
   };
 
-  // ── If an EScript is active, render agentic UI (full screen, OLED black) ──
+  // ─── Mic button press ────────────────────────────────────────────────────────
+  const handleMicPress = () => {
+    if (callState === "listening") stopListeningAndSend();
+    else if (callState === "active") startListening();
+  };
+
+  // ─── Render: EScript active ──────────────────────────────────────────────────
   if (activeScript) {
     return (
       <EScriptRenderer
@@ -279,13 +380,12 @@ export default function SOSScreen() {
     );
   }
 
-  // ── Mock demo menu overlay ─────────────────────────────────────────────────
+  // ─── Render: Mock menu ───────────────────────────────────────────────────────
   if (showMockMenu) {
     return (
       <ScreenContainer containerClassName="bg-background" edges={["top", "left", "right", "bottom"]}>
-        <View style={styles.mockMenuContainer}>
-          <Text style={styles.mockMenuTitle}>🧪 Demo Mode</Text>
-          <Text style={styles.mockMenuSubtitle}>Select a mock scenario to test</Text>
+        <View style={styles.mockContainer}>
+          <Text style={styles.mockTitle}>🧪 Demo Scenarios</Text>
           {Object.keys(MOCK_SCENARIOS).map((key) => (
             <Pressable
               key={key}
@@ -295,7 +395,7 @@ export default function SOSScreen() {
               <Text style={styles.mockBtnText}>{MOCK_LABELS[key] ?? key}</Text>
             </Pressable>
           ))}
-          <Pressable onPress={() => setShowMockMenu(false)} style={styles.mockCancelBtn}>
+          <Pressable onPress={() => setShowMockMenu(false)} style={styles.mockCancel}>
             <Text style={styles.mockCancelText}>Cancel</Text>
           </Pressable>
         </View>
@@ -303,111 +403,200 @@ export default function SOSScreen() {
     );
   }
 
-  const circleColor =
-    sosState === "listening" ? "#4a9d9c"
-    : sosState === "processing" ? "#FF9500"
-    : sosState === "response" ? "#22C55E"
-    : "#FF3D3D";
+  // ─── Render: Idle (before call starts) ──────────────────────────────────────
+  if (callState === "idle") {
+    return (
+      <ScreenContainer containerClassName="bg-background" edges={["top", "left", "right", "bottom"]}>
+        <View style={styles.idleContainer}>
+          <View style={styles.idleHeader}>
+            <Pressable onPress={handleBack} style={styles.backBtn}>
+              <Text style={styles.backText}>← Back</Text>
+            </Pressable>
+            <Pressable onPress={() => setShowMockMenu(true)} style={styles.demoBtn}>
+              <Text style={styles.demoBtnText}>Demo</Text>
+            </Pressable>
+          </View>
 
-  const spinInterpolate = spinAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ["0deg", "360deg"],
-  });
+          <View style={styles.idleCenter}>
+            <Text style={styles.idleTitle}>LIFELINE</Text>
+            <Text style={styles.idleSubtitle}>AI Emergency Operator</Text>
+
+            <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+              <Pressable onPress={startCall} style={styles.startBtn}>
+                <Text style={styles.startBtnLabel}>SOS</Text>
+                <Text style={styles.startBtnHint}>TAP TO CONNECT</Text>
+              </Pressable>
+            </Animated.View>
+
+            <Text style={styles.idleDesc}>
+              AI will listen and guide you step by step
+            </Text>
+          </View>
+
+          <Pressable
+            onPress={() => Linking.openURL("tel:103")}
+            style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
+          >
+            <Text style={styles.callText}>📞  Call 103</Text>
+          </Pressable>
+        </View>
+      </ScreenContainer>
+    );
+  }
+
+  // ─── Render: Active call ─────────────────────────────────────────────────────
+  const isListening = callState === "listening";
+  const isProcessing = callState === "processing" || callState === "connecting";
+  const spinInterp = spinAnim.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
 
   return (
-    <ScreenContainer containerClassName="bg-background" edges={["top", "left", "right", "bottom"]}>
-      <View style={styles.container}>
+    <ScreenContainer containerClassName="bg-[#0a0f14]" edges={["top", "left", "right", "bottom"]}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <View style={styles.callContainer}>
 
-        {/* Header: back + title + demo button */}
-        <View style={styles.header}>
-          <Pressable onPress={handleBack} style={styles.backBtn}>
-            <Text style={styles.backText}>← Back</Text>
-          </Pressable>
-          <Text style={styles.title}>VOICE SOS</Text>
-          <Pressable onPress={() => setShowMockMenu(true)} style={styles.demoBtn}>
-            <Text style={styles.demoBtnText}>Demo</Text>
-          </Pressable>
-        </View>
+          {/* Call header */}
+          <View style={styles.callHeader}>
+            <View style={styles.callStatus}>
+              <View style={[styles.callDot, { backgroundColor: isProcessing ? "#FF9500" : "#22C55E" }]} />
+              <Text style={styles.callStatusText}>
+                {callState === "connecting" ? "Connecting…"
+                  : callState === "processing" ? "Processing…"
+                  : callState === "listening" ? "Listening…"
+                  : "LIFELINE Active"}
+              </Text>
+            </View>
+            <Pressable onPress={handleBack} style={styles.endCallBtn}>
+              <Text style={styles.endCallText}>End</Text>
+            </Pressable>
+          </View>
 
-        {/* Central circle */}
-        <View style={styles.circleWrap}>
-          {sosState === "idle" && animationsEnabled && (
-            <Animated.View
-              style={[styles.pulseRing, { backgroundColor: circleColor + "28", transform: [{ scale: pulseAnim }] }]}
-            />
-          )}
-          {sosState === "processing" && animationsEnabled && (
-            <Animated.View style={[styles.spinRing, { transform: [{ rotate: spinInterpolate }] }]} />
-          )}
-          <Pressable
-            onPress={handleSOSPress}
-            disabled={sosState === "processing" || sosState === "response"}
-            style={[styles.circle, { backgroundColor: circleColor }]}
-          >
-            {sosState === "listening" ? (
-              <View style={styles.waveRow}>
-                {waveAnims.map((anim, i) => (
-                  <Animated.View key={i} style={[styles.waveBar, { transform: [{ scaleY: anim }] }]} />
-                ))}
-              </View>
-            ) : sosState === "processing" ? (
-              <Text style={styles.circleIcon}>⏳</Text>
-            ) : sosState === "response" ? (
-              <Text style={styles.circleIcon}>✅</Text>
-            ) : (
-              <>
-                <Text style={styles.circleLabel}>SOS</Text>
-                <Text style={styles.circleHint}>PRESS & SPEAK</Text>
-              </>
-            )}
-          </Pressable>
-        </View>
+          {/* Current instruction — large, prominent */}
+          {currentInstruction ? (
+            <View style={styles.instructionCard}>
+              <Text style={styles.instructionText}>{currentInstruction}</Text>
+            </View>
+          ) : null}
 
-        {/* Status */}
-        <Text style={[styles.status, panicDetected && styles.statusLarge]}>
-          {statusText}
-        </Text>
-
-        {/* Error */}
-        {errorText && <Text style={styles.error}>⚠ {errorText}</Text>}
-
-        {/* Chat history — shows previous AI/user exchanges */}
-        {chatHistory.length > 0 && (
+          {/* Conversation transcript */}
           <ScrollView
-            style={styles.chatScroll}
-            contentContainerStyle={styles.chatContent}
+            ref={scrollRef}
+            style={styles.transcript}
+            contentContainerStyle={styles.transcriptContent}
             showsVerticalScrollIndicator={false}
           >
-            {chatHistory.map((msg, i) => (
+            {messages.map((msg, i) => (
               <View
                 key={i}
                 style={[
-                  styles.chatBubble,
+                  styles.bubble,
                   msg.role === "ai" ? styles.aiBubble : styles.userBubble,
                 ]}
               >
-                <Text style={[styles.chatText, msg.role === "user" && styles.userText]}>
+                {msg.role === "ai" && (
+                  <Text style={styles.bubbleLabel}>LIFELINE</Text>
+                )}
+                <Text style={[styles.bubbleText, msg.role === "user" && styles.userBubbleText]}>
                   {msg.text}
                 </Text>
               </View>
             ))}
           </ScrollView>
-        )}
 
-        <View style={{ flex: 1 }} />
+          {/* Error */}
+          {errorText && (
+            <Text style={styles.errorText}>⚠ {errorText}</Text>
+          )}
 
-        {/* Call 103 */}
-        <Pressable
-          onPress={() => Linking.openURL("tel:103")}
-          style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
-        >
-          <Text style={styles.callText}>📞  Call 103</Text>
-        </Pressable>
+          {/* Mic / voice input area */}
+          <View style={styles.inputArea}>
+            {micAvailable ? (
+              <View style={styles.micRow}>
+                {/* Speak again button */}
+                <Pressable
+                  onPress={handleMicPress}
+                  disabled={isProcessing}
+                  style={[styles.micBtn, isListening && styles.micBtnActive, isProcessing && styles.micBtnDisabled]}
+                >
+                  {isListening ? (
+                    <View style={styles.waveRow}>
+                      {waveAnims.map((anim, i) => (
+                        <Animated.View key={i} style={[styles.waveBar, { transform: [{ scaleY: anim }] }]} />
+                      ))}
+                    </View>
+                  ) : isProcessing ? (
+                    <Animated.View style={[styles.spinner, { transform: [{ rotate: spinInterp }] }]} />
+                  ) : (
+                    <Text style={styles.micIcon}>🎤</Text>
+                  )}
+                </Pressable>
+                <Text style={styles.micHint}>
+                  {isListening ? "Tap to send" : isProcessing ? "Processing…" : "Tap to speak"}
+                </Text>
+              </View>
+            ) : (
+              /* Text fallback for web or no mic */
+              <View style={styles.textRow}>
+                <TextInput
+                  style={styles.textIn}
+                  value={textInput}
+                  onChangeText={setTextInput}
+                  placeholder="Type your message…"
+                  placeholderTextColor="#555"
+                  returnKeyType="send"
+                  onSubmitEditing={sendText}
+                  editable={!isProcessing}
+                />
+                <Pressable
+                  onPress={sendText}
+                  disabled={isProcessing || !textInput.trim()}
+                  style={({ pressed }) => [styles.sendBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Text style={styles.sendBtnText}>Send</Text>
+                </Pressable>
+              </View>
+            )}
 
-      </View>
+            {/* Also show text input as fallback even when mic is available */}
+            {micAvailable && callState === "active" && (
+              <View style={[styles.textRow, { marginTop: 8 }]}>
+                <TextInput
+                  style={styles.textIn}
+                  value={textInput}
+                  onChangeText={setTextInput}
+                  placeholder="Or type your message…"
+                  placeholderTextColor="#444"
+                  returnKeyType="send"
+                  onSubmitEditing={sendText}
+                />
+                <Pressable
+                  onPress={sendText}
+                  disabled={!textInput.trim()}
+                  style={({ pressed }) => [styles.sendBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Text style={styles.sendBtnText}>Send</Text>
+                </Pressable>
+              </View>
+            )}
+          </View>
+
+          {/* Call 103 */}
+          <Pressable
+            onPress={() => Linking.openURL("tel:103")}
+            style={({ pressed }) => [styles.callBar, pressed && { opacity: 0.8 }]}
+          >
+            <Text style={styles.callText}>📞  Call 103</Text>
+          </Pressable>
+
+        </View>
+      </KeyboardAvoidingView>
     </ScreenContainer>
   );
 }
+
+// ─── Labels ───────────────────────────────────────────────────────────────────
 
 const MOCK_LABELS: Record<string, string> = {
   poll_critical:     "🔴 Poll — Critical diagnosis",
@@ -416,112 +605,140 @@ const MOCK_LABELS: Record<string, string> = {
   hardware_flash:    "🔦 Hardware — SOS Flash",
 };
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: 20, paddingTop: 6, paddingBottom: 12 },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 4,
-  },
-  backBtn: { paddingVertical: 8, paddingRight: 8, minWidth: 60 },
-  backText: { fontSize: 16, color: "#4a9d9c", fontWeight: "600" },
-  title: { fontSize: 20, fontWeight: "800", color: "#FFFFFF", letterSpacing: 2 },
-  demoBtn: {
-    backgroundColor: "#1d2e3d",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderWidth: 1,
-    borderColor: "#354656",
-    minWidth: 60,
-    alignItems: "center",
-  },
-  demoBtnText: { fontSize: 13, color: "#4a9d9c", fontWeight: "700" },
-  circleWrap: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    minHeight: 220,
-  },
-  pulseRing: {
-    position: "absolute",
-    width: 220,
-    height: 220,
-    borderRadius: 110,
-  },
-  spinRing: {
-    position: "absolute",
-    width: 200,
-    height: 200,
-    borderRadius: 100,
-    borderWidth: 4,
-    borderColor: "#FF9500",
-    borderTopColor: "transparent",
-  },
-  circle: {
-    width: 180,
-    height: 180,
-    borderRadius: 90,
+  // ── Idle ──
+  idleContainer: { flex: 1, paddingHorizontal: 20, paddingTop: 6, paddingBottom: 12 },
+  idleHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 },
+  idleCenter: { flex: 1, justifyContent: "center", alignItems: "center", gap: 20 },
+  idleTitle: { fontSize: 36, fontWeight: "900", color: "#FFFFFF", letterSpacing: 5 },
+  idleSubtitle: { fontSize: 15, color: "#9BA1A6", fontWeight: "500", letterSpacing: 0.5 },
+  startBtn: {
+    width: 260,
+    height: 260,
+    borderRadius: 130,
+    backgroundColor: "#FF3D3D",
     justifyContent: "center",
     alignItems: "center",
     shadowColor: "#FF3D3D",
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.6,
-    shadowRadius: 28,
-    elevation: 14,
+    shadowOpacity: 0.8,
+    shadowRadius: 50,
+    elevation: 24,
   },
-  circleLabel: { fontSize: 44, fontWeight: "900", color: "#FFF", letterSpacing: 4 },
-  circleHint: { fontSize: 10, fontWeight: "700", color: "#FFF", marginTop: 4, opacity: 0.85 },
-  circleIcon: { fontSize: 52 },
-  waveRow: { flexDirection: "row", alignItems: "center", gap: 6, height: 64 },
-  waveBar: { width: 7, height: 52, borderRadius: 4, backgroundColor: "#FFFFFF" },
-  status: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#FFFFFF",
-    textAlign: "center",
+  startBtnLabel: { fontSize: 64, fontWeight: "900", color: "#FFF", letterSpacing: 6 },
+  startBtnHint: { fontSize: 11, fontWeight: "700", color: "#FFF", marginTop: 6, opacity: 0.85, letterSpacing: 2 },
+  idleDesc: { fontSize: 14, color: "#687076", textAlign: "center", paddingHorizontal: 32 },
+
+  // ── Active call ──
+  callContainer: { flex: 1, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12 },
+  callHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  callStatus: { flexDirection: "row", alignItems: "center", gap: 8 },
+  callDot: { width: 10, height: 10, borderRadius: 5 },
+  callStatusText: { fontSize: 14, fontWeight: "700", color: "#FFFFFF" },
+  endCallBtn: {
+    backgroundColor: "#FF3D3D",
+    borderRadius: 10,
     paddingHorizontal: 16,
-    lineHeight: 28,
-    marginTop: 8,
+    paddingVertical: 7,
   },
-  statusLarge: { fontSize: 26, lineHeight: 34 },
-  error: {
-    fontSize: 14,
-    color: "#FF3D3D",
+  endCallText: { fontSize: 14, fontWeight: "800", color: "#FFF" },
+
+  // Instruction card
+  instructionCard: {
+    backgroundColor: "#1a2a1a",
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#22C55E40",
+  },
+  instructionText: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: "#22C55E",
     textAlign: "center",
-    marginTop: 8,
-    paddingHorizontal: 16,
+    lineHeight: 30,
   },
-  chatScroll: {
-    maxHeight: 160,
-    marginTop: 12,
-  },
-  chatContent: { gap: 8, paddingBottom: 4 },
-  chatBubble: {
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    maxWidth: "90%",
-  },
+
+  // Transcript
+  transcript: { flex: 1 },
+  transcriptContent: { gap: 10, paddingBottom: 8 },
+  bubble: { borderRadius: 14, paddingHorizontal: 14, paddingVertical: 10, maxWidth: "88%" },
   aiBubble: {
-    backgroundColor: "#1d2e3d",
+    backgroundColor: "#141e2a",
     alignSelf: "flex-start",
     borderWidth: 1,
-    borderColor: "#354656",
+    borderColor: "#2a3a4a",
   },
   userBubble: {
-    backgroundColor: "#4a9d9c20",
+    backgroundColor: "#1a2e1a",
     alignSelf: "flex-end",
     borderWidth: 1,
-    borderColor: "#4a9d9c60",
+    borderColor: "#22C55E40",
   },
-  chatText: {
-    fontSize: 14,
-    color: "#E0E0E0",
-    lineHeight: 20,
+  bubbleLabel: { fontSize: 10, fontWeight: "800", color: "#4a9d9c", marginBottom: 3, letterSpacing: 1 },
+  bubbleText: { fontSize: 15, color: "#D0D8E0", lineHeight: 22 },
+  userBubbleText: { color: "#FFFFFF" },
+
+  // Error
+  errorText: { fontSize: 13, color: "#FF3D3D", textAlign: "center", marginVertical: 4 },
+
+  // Input area
+  inputArea: { marginTop: 8, marginBottom: 8 },
+  micRow: { alignItems: "center", gap: 8 },
+  micBtn: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: "#1d2e3d",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#4a9d9c",
   },
-  userText: { color: "#FFFFFF" },
+  micBtnActive: { backgroundColor: "#4a9d9c", borderColor: "#4a9d9c" },
+  micBtnDisabled: { opacity: 0.5 },
+  micIcon: { fontSize: 30 },
+  micHint: { fontSize: 12, color: "#687076", fontWeight: "600" },
+  waveRow: { flexDirection: "row", alignItems: "center", gap: 4, height: 36 },
+  waveBar: { width: 5, height: 28, borderRadius: 3, backgroundColor: "#FFFFFF" },
+  spinner: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 3,
+    borderColor: "#FF9500",
+    borderTopColor: "transparent",
+  },
+  textRow: { flexDirection: "row", gap: 8, alignItems: "center" },
+  textIn: {
+    flex: 1,
+    backgroundColor: "#141e2a",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: "#FFFFFF",
+    fontSize: 15,
+    borderWidth: 1,
+    borderColor: "#2a3a4a",
+  },
+  sendBtn: {
+    backgroundColor: "#4a9d9c",
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  sendBtnText: { fontSize: 14, fontWeight: "800", color: "#FFF" },
+
+  // Call bar
   callBar: {
     backgroundColor: "#22C55E",
     borderRadius: 14,
@@ -529,16 +746,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   callText: { fontSize: 20, fontWeight: "800", color: "#FFFFFF", letterSpacing: 1 },
-  // Mock menu
-  mockMenuContainer: {
-    flex: 1,
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 20,
-    gap: 12,
+
+  // Common
+  backBtn: { paddingVertical: 8, paddingRight: 8 },
+  backText: { fontSize: 16, color: "#4a9d9c", fontWeight: "600" },
+  demoBtn: {
+    backgroundColor: "#1d2e3d",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: "#354656",
   },
-  mockMenuTitle: { fontSize: 26, fontWeight: "900", color: "#FFFFFF", marginBottom: 4 },
-  mockMenuSubtitle: { fontSize: 15, color: "#9BA1A6", marginBottom: 8 },
+  demoBtnText: { fontSize: 13, color: "#4a9d9c", fontWeight: "700" },
+
+  // Mock menu
+  mockContainer: { flex: 1, paddingHorizontal: 20, paddingTop: 20, gap: 12 },
+  mockTitle: { fontSize: 26, fontWeight: "900", color: "#FFFFFF", marginBottom: 8 },
   mockBtn: {
     backgroundColor: "#1d2e3d",
     borderRadius: 14,
@@ -548,6 +772,6 @@ const styles = StyleSheet.create({
     borderColor: "#354656",
   },
   mockBtnText: { fontSize: 17, fontWeight: "700", color: "#FFFFFF" },
-  mockCancelBtn: { paddingVertical: 14, alignItems: "center" },
+  mockCancel: { paddingVertical: 14, alignItems: "center" },
   mockCancelText: { fontSize: 16, color: "#687076", fontWeight: "600" },
 });

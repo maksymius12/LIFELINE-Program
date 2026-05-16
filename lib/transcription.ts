@@ -1,24 +1,22 @@
 /**
- * Client-side voice transcription helper.
+ * Client-side audio upload helper.
  *
- * Flow:
- * 1. POST multipart/form-data to /api/upload-audio → get S3 URL
- * 2. POST to /api/trpc/emergency.transcribe (Whisper) → get text
+ * Uploads a local audio file URI to the server's /api/upload-audio endpoint
+ * and returns the public S3 URL. The URL is then passed to emergency.chat
+ * so the server can transcribe it with Whisper in the same round trip.
  *
- * Falls back to a placeholder string on any error so the app never crashes.
+ * Returns null on any failure — callers should handle null gracefully.
  */
 import { Platform } from "react-native";
 import { getApiBaseUrl } from "@/constants/oauth";
 import * as Auth from "@/lib/_core/auth";
 
-const FALLBACK = "emergency help needed";
-
 /**
- * Upload a local audio file URI to the server and transcribe it with Whisper.
- * Returns the transcript text, or the fallback string on failure.
+ * Upload a local audio file URI to S3 and return the public URL.
+ * Returns null if the upload fails or we're on web.
  */
-export async function transcribeAudioUri(uri: string): Promise<string> {
-  if (!uri || Platform.OS === "web") return FALLBACK;
+export async function uploadAudioUri(uri: string): Promise<string | null> {
+  if (!uri || Platform.OS === "web") return null;
 
   try {
     const baseUrl = getApiBaseUrl();
@@ -27,7 +25,6 @@ export async function transcribeAudioUri(uri: string): Promise<string> {
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    // 1. Upload audio — React Native FormData supports { uri, name, type }
     const formData = new FormData();
     formData.append("audio", {
       uri,
@@ -43,27 +40,17 @@ export async function transcribeAudioUri(uri: string): Promise<string> {
       signal: AbortSignal.timeout(20000),
     });
 
-    if (!uploadRes.ok) return FALLBACK;
-    const { url: audioUrl } = (await uploadRes.json()) as { url: string };
-    if (!audioUrl) return FALLBACK;
-
-    // 2. Transcribe via Whisper tRPC route
-    const transcribeRes = await fetch(`${baseUrl}/api/trpc/emergency.transcribe`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
-      credentials: "include",
-      body: JSON.stringify({ json: { audioUrl } }),
-      signal: AbortSignal.timeout(30000),
-    });
-
-    if (!transcribeRes.ok) return FALLBACK;
-    const json = (await transcribeRes.json()) as any;
-    // tRPC response shape: { result: { data: { json: { text, language } } } }
-    const text: string =
-      json?.result?.data?.json?.text ?? json?.text ?? "";
-
-    return text.trim() || FALLBACK;
+    if (!uploadRes.ok) return null;
+    const { url } = (await uploadRes.json()) as { url?: string };
+    return url ?? null;
   } catch {
-    return FALLBACK;
+    return null;
   }
 }
+
+/**
+ * Alias for uploadAudioUri — kept for backward compatibility with training.tsx.
+ * Uploads audio and returns the S3 URL (not a transcript string).
+ * The server transcribes it when the URL is passed to emergency.chat.
+ */
+export const transcribeAudioUri = uploadAudioUri;

@@ -13,56 +13,58 @@ export default function TabLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: "#afffff",
-        tabBarInactiveTintColor: "#e0e0e0",
+        tabBarActiveTintColor: "#FF3B30",
+        tabBarInactiveTintColor: "#8E9BAA",
         headerShown: false,
         tabBarButton: HapticTab,
         tabBarStyle: {
           paddingTop: 8,
           paddingBottom: bottomPadding,
           height: tabBarHeight,
-          backgroundColor: "#0D1F2D",
-          borderTopColor: "#354656",
+          backgroundColor: "#0A0F14",
+          borderTopColor: "#1C2B38",
           borderTopWidth: 0.5,
+        },
+        tabBarLabelStyle: {
+          fontSize: 11,
+          fontWeight: "600",
+          letterSpacing: 0.3,
         },
       }}
     >
+      {/* Main SOS / Call screen */}
       <Tabs.Screen
         name="index"
         options={{
-          title: "Emergency",
+          title: "SOS",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="exclamationmark.triangle.fill" color={color} />
+            <IconSymbol size={26} name="phone.fill" color={color} />
           ),
         }}
       />
+      {/* Prepare: training + kit checklist */}
       <Tabs.Screen
-        name="training"
+        name="prepare"
         options={{
-          title: "Training",
+          title: "Prepare",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="book.fill" color={color} />
+            <IconSymbol size={26} name="shield.fill" color={color} />
           ),
         }}
       />
-      <Tabs.Screen
-        name="medical"
-        options={{
-          title: "My Kit",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="cross.case.fill" color={color} />
-          ),
-        }}
-      />
+      {/* Settings */}
       <Tabs.Screen
         name="settings"
         options={{
           title: "Settings",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="gearshape.fill" color={color} />
+            <IconSymbol size={26} name="gearshape.fill" color={color} />
           ),
         }}
       />
+      {/* Hidden legacy screens — kept so router doesn't crash if referenced */}
+      <Tabs.Screen name="training" options={{ href: null }} />
+      <Tabs.Screen name="medical" options={{ href: null }} />
     </Tabs>
   );
 }

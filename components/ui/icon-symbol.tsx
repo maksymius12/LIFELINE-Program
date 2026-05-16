@@ -15,6 +15,11 @@ const MAPPING = {
   "book.fill": "menu-book",
   "cross.case.fill": "medical-services",
   "gearshape.fill": "settings",
+  "shield.fill": "shield",
+  "phone.fill": "phone",
+  "checklist": "checklist",
+  "bolt.fill": "bolt",
+  "person.2.fill": "group",
 } as IconMapping;
 
 export function IconSymbol({

@@ -85,8 +85,8 @@ export default function TrainingScreen() {
     try {
       await audioRecorder.stop();
       const uri = audioRecorder.uri;
-      const transcript = uri ? await transcribeAudioUri(uri) : "I don't know";
-      await evaluateAnswer(transcript);
+      const rawTranscript = uri ? await transcribeAudioUri(uri) : null;
+      await evaluateAnswer(rawTranscript ?? "I don't know");
     } catch {
       setSession((prev) => prev ? { ...prev, phase: "prompt" } : prev);
     }

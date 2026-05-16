@@ -106,3 +106,16 @@
 - [x] Make SOS button significantly larger (240px+)
 - [x] Test AI response end-to-end
 - [x] TypeScript check passes
+
+## v1.7 — 911 Call Redesign
+
+- [x] Diagnose and fix voice recording / AI pipeline on real device
+- [x] Reduce to 3 tabs: SOS (main), Prepare, Settings
+- [x] Remove Medical AI tab (merge into AI conversation)
+- [x] Remove standalone Training tab (move to Prepare)
+- [x] Rebuild SOS as 911 call screen with continuous voice turns
+- [x] Add "Speak again" button after each AI response
+- [x] Show live transcript of what user said
+- [x] Show AI response as both text and TTS
+- [x] Build Prepare tab: training scenarios + My Kit checklist
+- [x] My Kit: tap-to-check supply list persisted in AsyncStorage
