@@ -87,6 +87,15 @@ const config: ExpoConfig = {
   plugins: [
     "expo-router",
     [
+      "llama.rn",
+      {
+        enableEntitlements: true,
+        entitlementsProfile: "production",
+        forceCxx20: true,
+        enableOpenCL: true,
+      },
+    ],
+    [
       "expo-audio",
       {
         microphonePermission: "Allow $(PRODUCT_NAME) to access your microphone.",

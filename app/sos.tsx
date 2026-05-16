@@ -41,10 +41,12 @@ import { ScreenContainer } from "@/components/screen-container";
 import { haptic } from "@/lib/haptics";
 import { speakInstruction, stopSpeech } from "@/lib/speech";
 import {
-  chatWithOperator,
   type ConversationMessage,
   type OperatorResponse,
 } from "@/lib/ai-analysis";
+import { chatWithOperatorLocal } from "@/lib/local-emergency-chat";
+import { initLocalLLM } from "@/lib/local-llm";
+import { LLMStatusBar } from "@/components/llm-status-bar";
 import { uploadAudioUri } from "@/lib/transcription";
 import { sendEmergencySMS } from "@/lib/family-sms";
 import { useAppContext } from "@/lib/app-context";
@@ -99,6 +101,11 @@ export default function SOSScreen() {
 
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   useAudioRecorderState(audioRecorder);
+
+  // ── Init on-device LLM ─────────────────────────────────────────────────────
+  useEffect(() => {
+    initLocalLLM().catch(() => {});
+  }, []);
 
   // ── Permission setup ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -277,7 +284,7 @@ export default function SOSScreen() {
     setVoiceHint("Connecting…");
 
     try {
-      const response = await chatWithOperator([], undefined, undefined);
+      const response = await chatWithOperatorLocal([], undefined, undefined);
       applyResponse(response, []);
     } catch {
       setErrorText("Cannot reach AI — check connection");
@@ -308,7 +315,7 @@ export default function SOSScreen() {
       setMessages((prev) => [...prev, { role: "user", text: "🎤 …" }]);
 
       const currentHistory = historyRef.current;
-      const response = await chatWithOperator(currentHistory, audioUrl ?? undefined, undefined);
+      const response = await chatWithOperatorLocal(currentHistory, audioUrl ?? undefined, undefined);
 
       // Check for voice command to end call
       if (response.transcript) {
@@ -380,7 +387,7 @@ export default function SOSScreen() {
     setHistory(newHistory);
 
     try {
-      const response = await chatWithOperator(newHistory);
+      const response = await chatWithOperatorLocal(newHistory);
       applyResponse(response, newHistory);
     } catch {
       setErrorText("AI failed — try again");
@@ -400,7 +407,7 @@ export default function SOSScreen() {
       setMessages((prev) => [...prev, { role: "user", text: context }]);
 
       try {
-        const response = await chatWithOperator(newHistory);
+        const response = await chatWithOperatorLocal(newHistory);
         applyResponse(response, newHistory);
       } catch {
         setCallState("active");
@@ -524,6 +531,7 @@ export default function SOSScreen() {
 
   return (
     <ScreenContainer containerClassName="bg-[#0a0f14]" edges={["top", "left", "right", "bottom"]}>
+      <LLMStatusBar />
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
